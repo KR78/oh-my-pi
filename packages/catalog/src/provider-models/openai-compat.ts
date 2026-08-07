@@ -1554,6 +1554,33 @@ export function deepseekModelManagerOptions(
 }
 
 // ---------------------------------------------------------------------------
+// Vec Gateway (ug.vec.run) — Anthropic-compatible gateway in front of Umans
+// ---------------------------------------------------------------------------
+
+export interface VecGatewayModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+/**
+ * Discovery against our gateway. The gateway's `/v1/models` is OpenAI-compatible
+ * (list envelope) and advertises umans-style `capabilities.reasoning`, which the
+ * patched mapWithBundledReference now surfaces as thinking/effort options.
+ * fetchDynamicModels only runs once an apiKey is present (post-login), and the
+ * key is forwarded upstream — harmless because our /v1/models is public.
+ */
+export function vecGatewayModelManagerOptions(
+	config?: VecGatewayModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	return createSimpleOpenAICompletionsOptions(
+		"vec" as Parameters<typeof getBundledModels>[0],
+		"https://ug.vec.run/v1",
+		config,
+	);
+}
+
+// ---------------------------------------------------------------------------
 // 6.6 SiliconFlow
 // ---------------------------------------------------------------------------
 

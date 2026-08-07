@@ -62,6 +62,7 @@ import { tavilyProvider } from "./tavily";
 import { togetherProvider } from "./together";
 import type { ProviderDefinition } from "./types";
 import { umansProvider } from "./umans";
+import { vecProvider } from "./vec";
 import { veniceProvider } from "./venice";
 import { vercelAiGatewayProvider } from "./vercel-ai-gateway";
 import { vllmProvider } from "./vllm";
@@ -107,6 +108,7 @@ const ALL = [
 	aimlApiProvider,
 	zhipuCodingPlanProvider,
 	umansProvider,
+	vecProvider,
 	qwenPortalProvider,
 	sakanaProvider,
 	minimaxCodeProvider,

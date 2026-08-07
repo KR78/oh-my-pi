@@ -49,6 +49,7 @@ import {
 	syntheticModelManagerOptions,
 	togetherModelManagerOptions,
 	umansModelManagerOptions,
+	vecGatewayModelManagerOptions,
 	veniceModelManagerOptions,
 	vercelAiGatewayModelManagerOptions,
 	vllmModelManagerOptions,
@@ -433,6 +434,14 @@ export const CATALOG_PROVIDERS = [
 		createModelManagerOptions: (config: ModelManagerConfig) => umansModelManagerOptions(config),
 		dynamicModelsAuthoritative: true,
 		catalogDiscovery: { label: "Umans AI Coding Plan", allowUnauthenticated: true },
+	},
+	{
+		id: "vec",
+		defaultModel: "umans-coder",
+		envVars: ["VEC_GATEWAY_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => vecGatewayModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Vec Gateway", allowUnauthenticated: true },
 	},
 	{
 		id: "venice",
