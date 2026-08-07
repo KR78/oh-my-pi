@@ -300,22 +300,25 @@ function mapWithBundledReference<TApi extends Api>(
 	reference: ModelSpec<TApi> | undefined,
 ): ModelSpec<TApi> {
 	const name = toModelName(entry.name, reference?.name ?? defaults.name);
-	if (!reference) {
-		return {
-			...defaults,
-			name,
-		};
-	}
-	return {
-		...reference,
+	const base = reference ? { ...reference, name } : { ...defaults, name };
+	const result: ModelSpec<TApi> = {
+		...base,
 		id: defaults.id,
 		name,
 		api: defaults.api,
 		provider: defaults.provider,
 		baseUrl: defaults.baseUrl,
-		contextWindow: toPositiveNumber(entry.context_length, reference.contextWindow),
-		maxTokens: toPositiveNumber(entry.max_completion_tokens, reference.maxTokens),
+		contextWindow: toPositiveNumber(entry.context_length, base.contextWindow),
+		maxTokens: toPositiveNumber(entry.max_completion_tokens, base.maxTokens),
 	};
+	const capabilities = isRecord(entry.capabilities) ? entry.capabilities : undefined;
+	if (!capabilities) return result;
+	const thinking = mapCapabilitiesThinkingConfig(capabilities.reasoning);
+	if (thinking !== undefined) {
+		result.reasoning = true;
+		result.thinking = thinking;
+	}
+	return result;
 }
 
 function normalizeAnthropicBaseUrl(baseUrl: string | undefined, fallback: string): string {
@@ -752,7 +755,7 @@ function umansHasMaxReasoningLevel(value: unknown): boolean {
 	return isRecord(value) && Array.isArray(value.levels) && value.levels.includes("max");
 }
 
-function mapUmansThinkingConfig(value: unknown): ThinkingConfig | undefined {
+function mapCapabilitiesThinkingConfig(value: unknown): ThinkingConfig | undefined {
 	if (!umansReasoningSupported(value)) return undefined;
 	const efforts = mapUmansReasoningEfforts(value);
 	const thinking: ThinkingConfig = {
@@ -782,7 +785,7 @@ function mapUmansModelInfo(
 	if (!modelId) return null;
 	const capabilities = isRecord(raw.capabilities) ? raw.capabilities : {};
 	const supportsTools = capabilities.supports_tools;
-	const thinking = mapUmansThinkingConfig(capabilities.reasoning);
+	const thinking = mapCapabilitiesThinkingConfig(capabilities.reasoning);
 	return {
 		...reference,
 		id: modelId,
