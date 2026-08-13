@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Changed
+
+- OpenCode Go usage now comes from the official `GET /zen/go/v1/usage` endpoint (rolling 5h / weekly / monthly percent windows with server-computed resets) instead of synthesizing dollar estimates from OMP-observed request costs, so `/usage` reflects spend made outside OMP and the hardcoded $12/$30/$60 caps are gone. The usage probe now validates credentials (401 invalid key, 403 lapsed Go subscription), and a new ranking strategy routes multi-key pools by rolling/weekly headroom while keeping the monthly window display-only (an exhausted monthly can still serve requests via the console "Use balance" fallback) ([#8337](https://github.com/can1357/oh-my-pi/pull/8337) by [@will-bogusz](https://github.com/will-bogusz)).
+- Changed direct Anthropic prompt caching to two rolling 5-minute breakpoints on the latest real messages. Opt-in session owners can now keep the prefix warm through three bounded idle refreshes, using non-streaming `max_tokens: 0` when thinking is inactive and aborting immediately after generation begins when thinking is active.
+
+### Fixed
+
+- Fixed the Ollama chat adapter silently dropping `temperature`/`topP`: sampling params are now forwarded under the request's `options` alongside `num_predict`, so callers pinning greedy decode (e.g. session-title generation) actually affect the wire request.
+- Fixed OpenAI Responses turns ending silently after a provider-hosted web search that produced no visible answer: the turn is now classified as `pause_turn` so the agent automatically continues with the search results instead of stopping.
+- Fixed completed model streams retaining their provider concurrency permit until after completion became observable, without replacing provider results when lease cleanup fails ([#8284](https://github.com/can1357/oh-my-pi/pull/8284) by [@ethancawse](https://github.com/ethancawse)).
+- Fixed the DashScope compatible-mode text-only Qwen override (issue #1859) stripping images from `qwen3.8-max`, which became multimodal in the bundled catalog (image input, #8019). The `-max` guard now only vetoes image content for pre-3.8 SKUs, so `qwen3.8-max`/`qwen3.8-max-preview` and later flagships send `image_url` content — restoring `inspect_image` on those models configured against `dashscope.aliyuncs.com/compatible-mode/v1` ([#8305](https://github.com/can1357/oh-my-pi/issues/8305)).
+- Fixed xAI (`xai-oauth`) usage reporting falling back to a stale exhausted cache when a fresh weekly cycle with 0% consumed credits omits the `creditUsagePercent` field ([#8325](https://github.com/can1357/oh-my-pi/pull/8325) by [@bubua12](https://github.com/bubua12)).
+- Fixed `/login together` always failing with HTTP 400 `model_not_available`: key validation chat-completed against the hardcoded non-serverless model `moonshotai/Kimi-K2.5`, so no valid key could pass. Validation now probes Together's authenticated `/v1/models` listing, matching the model-agnostic approach used by other API-key providers ([#8328](https://github.com/can1357/oh-my-pi/issues/8328)).
+- Fixed aggregate usage fetches and credential-health probes sending reference-stored API keys (env var name, `!command`) as the literal reference string instead of the resolved secret, which would 401 and flag working credentials as bad for providers whose usage probe validates credentials ([#8337](https://github.com/can1357/oh-my-pi/pull/8337) by [@will-bogusz](https://github.com/will-bogusz)).
+- Fixed Perplexity email-OTP login dropping the session cookies required to verify the code ([#8156](https://github.com/can1357/oh-my-pi/issues/8156)).
+- Fixed OpenAI GPT-5.6 and Daybreak `off` thinking requests serializing as `low`; every first-party alias with explicit wire-level off support now sends `reasoning.effort: "none"`.
+
+### Removed
+
+- Removed the observed-request-cost machinery that existed only to power the OpenCode Go estimate: `AuthStorage.recordUsageCost`, the store `recordUsageCosts`/`listUsageCosts` hooks, `UsageFetchContext.listUsageCosts`, the `UsageCostHistoryEntry`/`UsageCostHistoryQuery` types, and the `usage_cost_history` schema and statements. Existing unused tables are left intact rather than deleting local data during startup ([#8337](https://github.com/can1357/oh-my-pi/pull/8337) by [@will-bogusz](https://github.com/will-bogusz)).
+
 ## [17.2.15] - 2026-08-12
 
 ### Fixed
