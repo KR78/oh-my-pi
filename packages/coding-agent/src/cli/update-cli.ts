@@ -16,8 +16,14 @@ import { $ } from "bun";
 import { theme } from "../modes/theme/theme";
 import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
 
-const REPO = "can1357/oh-my-pi";
-const PACKAGE = "@oh-my-pi/pi-coding-agent";
+// Fork overrides: this build is published from KR78/oh-my-pi to the `@kr78`
+// npm scope, so `omp update` must resolve its own scope rather than upstream's
+// — otherwise every update silently replaces the fork with can1357's build.
+// NATIVES_PACKAGE below deliberately stays on `@oh-my-pi` (natives are not
+// forked), which means fork releases must reuse a version tag that upstream
+// also published, or the lock-step natives pin in `buildInstallArgs` will fail.
+const REPO = "KR78/oh-my-pi";
+const PACKAGE = "@kr78/pi-coding-agent";
 const HOMEBREW_FORMULA = "can1357/tap/omp";
 const MISE_TOOL = "github:can1357/oh-my-pi";
 const NIX_STORE_DIR = "/nix/store";
