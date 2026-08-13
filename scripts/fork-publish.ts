@@ -17,13 +17,19 @@
  * resolve the workspace deps from the registry at runtime, i.e. run upstream's
  * code and silently drop every fork patch.
  *
- * The `@oh-my-pi/*` dependency pins are left untouched on purpose: `bun pm pack`
- * resolves `catalog:` to the current monorepo version, and those versions exist
- * upstream. They are installed but unused by the bundled entrypoint.
+ * The `@oh-my-pi/*` dependency pins are left untouched: `bun pm pack` resolves
+ * `catalog:` to the current monorepo version. That is only safe when upstream has
+ * actually PUBLISHED that version — a version bump lands in git well before the
+ * release CI pushes it to npm, so building straight off a freshly merged bump
+ * produces a package whose every workspace pin 404s. `@kr78/pi-coding-agent@17.3.0`
+ * shipped exactly that way and had to be deprecated. `assertPinsResolve` below now
+ * refuses to publish unless every pin resolves on the registry.
  *
  * Consequence to respect when versioning: `omp update` pins
  * `@oh-my-pi/pi-natives` in lock-step with the agent version, so the version
- * published here must also exist upstream. Do not invent fork-only versions.
+ * published here must also exist upstream. Do not invent fork-only versions, and
+ * do not publish from a bump upstream has not released yet — wait, or publish from
+ * the last released base.
  *
  * The npm account has 2FA enforced for publishing, so a one-time password is
  * required; the granular token alone is not enough.
@@ -111,6 +117,39 @@ if (packedManifest.bin?.omp !== PUBLISH_BIN.omp) {
 }
 console.log(`Packed ${packedManifest.name}@${packedManifest.version} (bin → ${packedManifest.bin.omp})`);
 console.log(`Tarball: ${tarballPath}`);
+
+/**
+ * Fail before publishing if any scoped dependency pin is absent from the registry.
+ *
+ * `bun pm pack` resolves `catalog:` against the monorepo, which happily produces
+ * pins for a version upstream has not released. npm accepts such a manifest, and
+ * the breakage only surfaces later as `failed to resolve` in every consumer's
+ * install — after the version number is permanently burned.
+ */
+async function assertPinsResolve(tarball: string): Promise<void> {
+	const packed = JSON.parse((await $`tar -xOzf ${tarball} package/package.json`.quiet()).stdout.toString()) as {
+		dependencies?: Record<string, string>;
+	};
+	const scoped = Object.entries(packed.dependencies ?? {}).filter(
+		([name]) => name.startsWith("@oh-my-pi/") || name.startsWith("@kr78/"),
+	);
+	const unresolved: string[] = [];
+	for (const [name, range] of scoped) {
+		const spec = `${name}@${range}`;
+		const view = await $`npm view ${spec} version`.quiet().nothrow();
+		if (view.exitCode !== 0 || !view.stdout.toString().trim()) unresolved.push(spec);
+	}
+	if (unresolved.length > 0) {
+		throw new Error(
+			`Refusing to publish: ${unresolved.length} dependency pin(s) do not exist on npm:\n` +
+				`${unresolved.map(spec => `  - ${spec}`).join("\n")}\n` +
+				"Upstream has not released this version yet. Wait for its release CI, or publish from the last released base.",
+		);
+	}
+	console.log(`Verified ${scoped.length} workspace dependency pins resolve on npm.`);
+}
+
+await assertPinsResolve(tarballPath);
 
 if (isDryRun) {
 	console.log("DRY RUN — not publishing.");
