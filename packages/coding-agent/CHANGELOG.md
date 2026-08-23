@@ -1,10 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [18.0.4] - 2026-08-23
 
 ### Added
 
 - Added `--from-pi` and `--from-opencode` session imports, also available from `/resume @pi` and `/resume @opencode`. Pi sessions (`~/.pi/agent/sessions`) convert nearly losslessly through the shared replicated-entry lineage; OpenCode sessions (`~/.local/share/opencode/opencode.db`) keep user text, images, thinking, tool calls, and results while dropping runtime-only parts.
+- Added `omp sync-to-opencode [session]`: mirrors the OMP-side continuation of an OpenCode-imported session back into OpenCode's transcript store (with automatic backup and idempotent resume tracking), so a conversation can continue in `opencode` where it left off.
+
+## [Unreleased]
 
 ## [18.0.3] - 2026-08-23
 
