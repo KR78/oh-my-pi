@@ -51,6 +51,10 @@ export const galleryHelp = {
 
 export const gcHelp = { description: "Run storage garbage collection" } satisfies CommandMetadata;
 
+export const syncToOpencodeHelp = {
+	description: "Sync an imported session's OMP-side continuation back into OpenCode",
+} satisfies CommandMetadata;
+
 export const grepHelp = { description: "Test grep tool" } satisfies CommandMetadata;
 
 export const grievancesHelp = {

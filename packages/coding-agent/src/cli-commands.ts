@@ -92,6 +92,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.gcHelp,
 	},
 	{
+		name: "sync-to-opencode",
+		load: () => import("./commands/sync-to-opencode").then(m => m.default),
+		help: commandHelp.syncToOpencodeHelp,
+	},
+	{
 		name: "grep",
 		load: () => import("./commands/grep").then(m => m.default),
 		help: commandHelp.grepHelp,
