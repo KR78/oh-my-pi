@@ -89,7 +89,10 @@ async function buildTarball(): Promise<string> {
 		// protocols npm would ship verbatim, and runs the `prepack` lifecycle that
 		// generates the tool views and builds dist/cli.js.
 		console.log("Packing (runs prepack: gen:tool-views + gen:bundle)…");
-		const packed = await $`bun pm pack --destination ${packDir}`.cwd(PKG_DIR).nothrow();
+		const packed = await $`bun pm pack --destination ${packDir}`
+			.env({ ...process.env, PI_FORK_VERSION: version })
+			.cwd(PKG_DIR)
+			.nothrow();
 		if (packed.exitCode !== 0) throw new Error(`bun pm pack failed with exit code ${packed.exitCode}`);
 	} finally {
 		// Always restore the on-repo manifest byte-for-byte; the scope rewrite must

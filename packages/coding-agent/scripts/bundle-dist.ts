@@ -102,6 +102,10 @@ async function main(): Promise<void> {
 			define: {
 				"process.env.PI_BUNDLED": JSON.stringify("true"),
 				"process.env.PI_DOCS_EMBED": JSON.stringify(docsPayload.payload),
+				// Fork publishes carry their own version independent of the workspace
+				// base (upstream pins must reference released versions). When set,
+				// cli.ts reports this instead of the workspace VERSION.
+				"process.env.PI_FORK_VERSION": JSON.stringify(process.env.PI_FORK_VERSION ?? ""),
 			},
 			minify: {
 				whitespace: true,

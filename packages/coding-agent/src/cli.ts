@@ -41,6 +41,13 @@ import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 import { smokeTestComputerWorker } from "./tools/computer/supervisor";
 import { startComputerWorker } from "./tools/computer/worker-entry";
 
+// Fork publishes (@kr78) carry a version independent of the workspace base;
+// bundle-dist injects it at build time. Empty string = source checkout.
+const FORK_VERSION = process.env.PI_FORK_VERSION;
+/** Reported version: the fork publish version when bundled as @kr78, else the workspace VERSION. */
+const REPORTED_VERSION = FORK_VERSION ? FORK_VERSION : VERSION;
+
+
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
 		`error: Bun runtime must be >= ${MIN_BUN_VERSION} (found v${Bun.version}). Please upgrade: bun upgrade\n`,
@@ -436,7 +443,7 @@ export async function runCli(argv: string[]): Promise<void> {
 		// keeps the TUI graph out of worker, subcommand, help, and version launches.
 		// Loading it statically would erase the measured cold-start improvement.
 		const { beginStartupComposer, stopPendingStartupComposer } = await import("./modes/startup-composer");
-		beginStartupComposer({ version: VERSION });
+		beginStartupComposer({ version: REPORTED_VERSION });
 		stopStartupComposer = stopPendingStartupComposer;
 	}
 
@@ -453,7 +460,7 @@ export async function runCli(argv: string[]): Promise<void> {
 			process.exitCode = 1;
 			return;
 		}
-		await run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
+		await run({ bin: APP_NAME, version: REPORTED_VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
 	} finally {
 		stopStartupComposer?.();
 	}

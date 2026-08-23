@@ -179,7 +179,7 @@ function majorVersion(version: string): number {
  */
 export function shouldForceBinaryUpdate(
 	release: { version: string; dist?: ReleaseDist },
-	currentVersion: string = VERSION,
+	currentVersion: string = process.env.PI_FORK_VERSION || VERSION,
 ): boolean {
 	if (release.dist !== undefined) return release.dist === "binary";
 	return majorVersion(release.version) > majorVersion(currentVersion);
@@ -1909,7 +1909,7 @@ export async function runUpdateCommand(opts: {
 	check: boolean;
 	channel?: UpdateChannel;
 }): Promise<void> {
-	console.log(chalk.dim(`Current version: ${VERSION}`));
+	console.log(chalk.dim(`Current version: ${process.env.PI_FORK_VERSION || VERSION}`));
 	const persistedChannel = readPersistedChannel() ?? "stable";
 	const channel = opts.channel ?? persistedChannel;
 	const isChannelSwitch = opts.channel !== undefined && opts.channel !== persistedChannel;
