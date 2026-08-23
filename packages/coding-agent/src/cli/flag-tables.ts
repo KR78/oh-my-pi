@@ -87,7 +87,6 @@ const setResume: OptionalSetter = (result, value) => {
 };
 
 const MAX_TIME_DURATION_RE = /^(\d+(?:\.\d+)?)([smh])$/;
-
 function maxTimeMultiplier(unit: string | undefined): number {
 	if (unit === "h") return 3600;
 	if (unit === "m") return 60;
@@ -295,12 +294,12 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--version",
 	"--allow-home",
 	"--continue",
+	"--no-session",
+	"--no-tools",
 	"--from-claude",
 	"--from-codex",
 	"--from-pi",
 	"--from-opencode",
-	"--no-session",
-	"--no-tools",
 	"--no-lsp",
 	"--no-pty",
 	"--hide-thinking",

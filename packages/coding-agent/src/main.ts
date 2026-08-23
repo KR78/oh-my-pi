@@ -676,7 +676,9 @@ const FOREIGN_SOURCE_FLAGS = {
 function requestedForeignSources(parsed: Args): ForeignSessionSource[] {
 	const requested: ForeignSessionSource[] = [];
 	for (const [source, flag] of Object.entries(FOREIGN_SOURCE_FLAGS)) {
-		if (parsed[flag as keyof Args] === true) requested.push(source as ForeignSessionSource);
+		if (parsed[flag as keyof Args] !== undefined && parsed[flag as keyof Args] !== false) {
+			requested.push(source as ForeignSessionSource);
+		}
 	}
 	return requested;
 }
@@ -696,6 +698,12 @@ function resolveForeignSessionSource(parsed: Args): ForeignSessionSource | undef
 		throw new SessionResolutionError(`--from-${source} cannot be combined with --continue, --resume, or --fork`);
 	}
 	return source;
+}
+
+/** Explicit source-session id passed as `--from-<source> <id>`, if any. */
+function foreignSessionImportId(parsed: Args, source: ForeignSessionSource): string | undefined {
+	const value = parsed[FOREIGN_SOURCE_FLAGS[source]];
+	return typeof value === "string" ? value : undefined;
 }
 
 function isForeignSessionImport(parsed: Args): boolean {
@@ -900,6 +908,21 @@ export function normalizeContinueSessionArgs(parsed: Args, rawArgs?: readonly st
 	parsed.resume = message;
 	parsed.continue = false;
 	parsed.messages.splice(messageIndex, 1);
+}
+
+/**
+ * Promote a single UUID-shaped positional after a `--from-<source>` flag to
+ * that source's direct-import id, mirroring `--continue <id>` handling. The
+ * flags themselves stay value-less so an ordinary initial prompt still works.
+ */
+export function normalizeForeignSessionImportArgs(parsed: Args): void {
+	const sources = requestedForeignSources(parsed);
+	if (sources.length !== 1 || parsed.resume || parsed.fork) return;
+	if (parsed.unrecognizedFlags.length > 0 || parsed.messages.length !== 1) return;
+	const message = parsed.messages[0]?.trim();
+	const flagName = FOREIGN_SOURCE_FLAGS[sources[0]];
+	(parsed[flagName] as unknown) = message;
+	parsed.messages.splice(parsed.messages.indexOf(message), 1);
 }
 
 /** Resolves CLI session flags into an existing, forked, in-memory, or cancelled session manager. */
@@ -1568,10 +1591,12 @@ export async function runRootCommand(
 		// id from UUID-shaped values owned by later extension flags.
 		normalizeContinueSessionArgs(parsedArgs, rawArgs);
 
-		// Resolve native resume/fork flags or import one foreign transcript into a
-		// fresh persisted OMP session before constructing the AgentSession.
 		let sessionManager: SessionManager | undefined;
 		let foreignSource: ForeignSessionSource | undefined;
+
+		// Resolve native resume/fork flags or import one foreign transcript into a
+		// fresh persisted OMP session before constructing the AgentSession.
+		normalizeForeignSessionImportArgs(parsedArgs);
 		try {
 			foreignSource = resolveForeignSessionSource(parsedArgs);
 			if (foreignSource) {
@@ -1580,48 +1605,70 @@ export async function runRootCommand(
 				}
 				const sourceName = foreignSessionSourceName(foreignSource);
 				const store = (deps.createForeignSessionStore ?? createForeignSessionStore)(foreignSource);
-				let foreignSessions: ForeignSessionInfo[];
-				try {
-					foreignSessions = await logger.time(`list${sourceName}Sessions`, () => store.list());
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					throw new SessionResolutionError(`Failed to list ${sourceName} sessions: ${message}`);
-				}
-				if (foreignSessions.length === 0) {
-					writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} sessions found`)}\n`);
-					stopStartupWatchdog();
-					process.exit(0);
-				}
-				const choices = foreignSessions.map(foreignSessionInfoToSessionInfo);
-				pauseStartupWatchdog();
-				let selected: SessionInfo | null;
-				try {
-					selected = await logger.time(
-						`select${sourceName}Session`,
-						deps.selectSession ?? selectSession,
-						choices,
-						{
-							title: `Import ${sourceName} Session`,
-							scopeLabel: false,
-							showCwd: true,
-							allowDelete: false,
-							allowGlobalScope: false,
-							historySearch: false,
-						},
+				const importId = foreignSessionImportId(parsedArgs, foreignSource);
+				let foreignSession: ForeignSessionInfo | undefined;
+				if (importId !== undefined) {
+					// Direct import: `--from-<source> <id>` skips the picker.
+					let foreignSessions: ForeignSessionInfo[];
+					try {
+						foreignSessions = await logger.time(`list${sourceName}Sessions`, () => store.list());
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						throw new SessionResolutionError(`Failed to list ${sourceName} sessions: ${message}`);
+					}
+					foreignSession = foreignSessions.find(
+						session => session.id === importId || session.id.startsWith(importId),
 					);
-				} finally {
-					resumeStartupWatchdog();
-				}
-				if (!selected) {
-					writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} session selected`)}\n`);
-					stopStartupWatchdog();
-					process.exit(0);
-				}
-				const foreignSession = foreignSessions.find(
-					session => session.id === selected.id && session.path === selected.path,
-				);
-				if (!foreignSession) {
-					throw new SessionResolutionError(`Selected ${sourceName} session is no longer available`);
+					if (!foreignSession) {
+						throw new SessionResolutionError(
+							`No ${sourceName} session matches "${importId}".`,
+							`Run \`omp --from-${foreignSource}\` without an id to pick from all ${sourceName} sessions.`,
+						);
+					}
+				} else {
+					let foreignSessions: ForeignSessionInfo[];
+					try {
+						foreignSessions = await logger.time(`list${sourceName}Sessions`, () => store.list());
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						throw new SessionResolutionError(`Failed to list ${sourceName} sessions: ${message}`);
+					}
+					if (foreignSessions.length === 0) {
+						writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} sessions found`)}\n`);
+						stopStartupWatchdog();
+						process.exit(0);
+					}
+					const choices = foreignSessions.map(foreignSessionInfoToSessionInfo);
+					pauseStartupWatchdog();
+					let selected: SessionInfo | null;
+					try {
+						selected = await logger.time(
+							`select${sourceName}Session`,
+							deps.selectSession ?? selectSession,
+							choices,
+							{
+								title: `Import ${sourceName} Session`,
+								scopeLabel: false,
+								showCwd: true,
+								allowDelete: false,
+								allowGlobalScope: false,
+								historySearch: false,
+							},
+						);
+					} finally {
+						resumeStartupWatchdog();
+					}
+					if (!selected) {
+						writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} session selected`)}\n`);
+						stopStartupWatchdog();
+						process.exit(0);
+					}
+					foreignSession = foreignSessions.find(
+						session => session.id === selected.id && session.path === selected.path,
+					);
+					if (!foreignSession) {
+						throw new SessionResolutionError(`Selected ${sourceName} session is no longer available`);
+					}
 				}
 				try {
 					sessionManager = await logger.time(
