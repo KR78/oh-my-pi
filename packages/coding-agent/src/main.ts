@@ -664,14 +664,31 @@ export class SessionResolutionError extends Error {
 	}
 }
 
-function resolveForeignSessionSource(
-	parsed: Pick<Args, "continue" | "fork" | "fromClaude" | "fromCodex" | "noSession" | "resume">,
-): ForeignSessionSource | undefined {
-	if (parsed.fromClaude && parsed.fromCodex) {
-		throw new SessionResolutionError("--from-claude and --from-codex cannot be used together");
+/** CLI import flag names keyed by foreign source, in help-table order. */
+const FOREIGN_SOURCE_FLAGS = {
+	claude: "fromClaude",
+	codex: "fromCodex",
+	pi: "fromPi",
+	opencode: "fromOpencode",
+} as const satisfies Record<ForeignSessionSource, keyof Args>;
+
+/** CLI import flags currently set on the parsed arguments. */
+function requestedForeignSources(parsed: Args): ForeignSessionSource[] {
+	const requested: ForeignSessionSource[] = [];
+	for (const [source, flag] of Object.entries(FOREIGN_SOURCE_FLAGS)) {
+		if (parsed[flag as keyof Args] === true) requested.push(source as ForeignSessionSource);
 	}
-	const source = parsed.fromClaude ? "claude" : parsed.fromCodex ? "codex" : undefined;
-	if (!source) return undefined;
+	return requested;
+}
+
+function resolveForeignSessionSource(parsed: Args): ForeignSessionSource | undefined {
+	const requested = requestedForeignSources(parsed);
+	if (requested.length === 0) return undefined;
+	if (requested.length > 1) {
+		const names = requested.map(source => `--from-${source}`).join(" and ");
+		throw new SessionResolutionError(`${names} cannot be used together`);
+	}
+	const source = requested[0];
 	if (parsed.noSession) {
 		throw new SessionResolutionError(`--from-${source} requires session persistence`);
 	}
@@ -681,8 +698,8 @@ function resolveForeignSessionSource(
 	return source;
 }
 
-function isForeignSessionImport(parsed: Pick<Args, "fromClaude" | "fromCodex">): boolean {
-	return parsed.fromClaude === true || parsed.fromCodex === true;
+function isForeignSessionImport(parsed: Args): boolean {
+	return requestedForeignSources(parsed).length > 0;
 }
 
 type MissingCwdMoveResult =

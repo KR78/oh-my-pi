@@ -175,6 +175,8 @@ describe("foreign session import flags", () => {
 	it("parses each source flag without consuming the initial message", () => {
 		const claude = parseArgs(["--from-claude", "continue this session"]);
 		const codex = parseArgs(["--from-codex", "continue this session"]);
+		const pi = parseArgs(["--from-pi", "continue this session"]);
+		const opencode = parseArgs(["--from-opencode", "continue this session"]);
 
 		expect(claude.fromClaude).toBe(true);
 		expect(claude.messages).toEqual(["continue this session"]);
@@ -182,5 +184,11 @@ describe("foreign session import flags", () => {
 		expect(codex.fromCodex).toBe(true);
 		expect(codex.messages).toEqual(["continue this session"]);
 		expect(codex.unrecognizedFlags).toEqual([]);
+		expect(pi.fromPi).toBe(true);
+		expect(pi.messages).toEqual(["continue this session"]);
+		expect(pi.unrecognizedFlags).toEqual([]);
+		expect(opencode.fromOpencode).toBe(true);
+		expect(opencode.messages).toEqual(["continue this session"]);
+		expect(opencode.unrecognizedFlags).toEqual([]);
 	});
 });

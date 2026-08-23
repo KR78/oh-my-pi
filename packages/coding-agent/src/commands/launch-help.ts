@@ -56,6 +56,8 @@ export const launchHelp = {
 		resume: Flags.string({ char: "r", description: "Resume a session (by ID prefix, path, or picker if omitted)" }),
 		"from-claude": Flags.boolean({ description: "Import a Claude Code session into OMP" }),
 		"from-codex": Flags.boolean({ description: "Import a Codex session into OMP" }),
+		"from-pi": Flags.boolean({ description: "Import a Pi session into OMP" }),
+		"from-opencode": Flags.boolean({ description: "Import an OpenCode session into OMP" }),
 		"session-dir": Flags.string({ description: "Directory for session storage and lookup" }),
 		"no-session": Flags.boolean({ description: "Don't save session (ephemeral)" }),
 		models: Flags.string({ description: "Comma-separated model patterns for Ctrl+P cycling" }),

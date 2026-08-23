@@ -53,6 +53,8 @@ export interface Args {
 	resume?: string | true;
 	fromClaude?: boolean;
 	fromCodex?: boolean;
+	fromPi?: boolean;
+	fromOpencode?: boolean;
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
@@ -244,6 +246,10 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.fromClaude = true;
 		} else if (arg === "--from-codex") {
 			result.fromCodex = true;
+		} else if (arg === "--from-pi") {
+			result.fromPi = true;
+		} else if (arg === "--from-opencode") {
+			result.fromOpencode = true;
 		} else if (arg === "--no-session") {
 			result.noSession = true;
 		} else if (arg === "--no-tools") {

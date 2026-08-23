@@ -2,17 +2,35 @@ import { directoryExists } from "@oh-my-pi/pi-utils";
 import { ClaudeSessionStore } from "./claude-session-store";
 import { CodexSessionStore } from "./codex-session-store";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./foreign-session-store";
+import { OpenCodeSessionStore } from "./opencode-session-store";
+import { PiSessionStore } from "./pi-session-store";
 import type { SessionInfo } from "./session-listing";
 import type { SessionManager } from "./session-manager";
 
+/** Store constructors keyed by foreign source; each builds the importer for that agent. */
+const FOREIGN_SESSION_STORES: Record<ForeignSessionSource, () => ForeignSessionStore> = {
+	claude: () => new ClaudeSessionStore(),
+	codex: () => new CodexSessionStore(),
+	pi: () => new PiSessionStore(),
+	opencode: () => new OpenCodeSessionStore(),
+};
+
+/** Display names keyed by foreign source. */
+const FOREIGN_SESSION_SOURCE_NAMES: Record<ForeignSessionSource, string> = {
+	claude: "Claude",
+	codex: "Codex",
+	pi: "Pi",
+	opencode: "OpenCode",
+};
+
 /** Construct the importer for a supported foreign session source. */
 export function createForeignSessionStore(source: ForeignSessionSource): ForeignSessionStore {
-	return source === "claude" ? new ClaudeSessionStore() : new CodexSessionStore();
+	return FOREIGN_SESSION_STORES[source]();
 }
 
 /** Display name for a supported foreign session source. */
 export function foreignSessionSourceName(source: ForeignSessionSource): string {
-	return source === "claude" ? "Claude" : "Codex";
+	return FOREIGN_SESSION_SOURCE_NAMES[source];
 }
 
 /** Convert lightweight foreign metadata for the existing session picker. */
