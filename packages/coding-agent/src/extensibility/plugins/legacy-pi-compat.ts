@@ -865,6 +865,8 @@ function remapLegacyPiSubpath(rest: string): string {
 
 const LEGACY_PI_SPECIFIER_FILTER = new RegExp(`^@(?:${PI_SCOPE_ALTERNATION})/(?:${PI_PACKAGE_ALTERNATION})(?:/.*)?$`);
 const resolvedSpecifierFallbacks = new Map<string, string>();
+// Specifiers whose canonical resolution already failed (re-entrancy guard).
+const failedLegacyPiResolutions = new Set<string>();
 const SOURCE_MODULE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"] as const;
 const SUPPORTED_PACKAGE_IMPORT_CONDITIONS = new Set(["bun", "node", "import", "default"]);
 const SUPPORTED_PACKAGE_REQUIRE_CONDITIONS = new Set(["bun", "node", "require", "default"]);
@@ -880,6 +882,7 @@ const nativeAddonRequireScanCache = new Map<string, Promise<boolean>>();
 
 function clearLegacyPiResolutionCaches(): void {
 	resolvedSpecifierFallbacks.clear();
+	failedLegacyPiResolutions.clear();
 	packageRootCache.clear();
 	packageImportsCache.clear();
 	nodePackageRootCache.clear();
@@ -2810,26 +2813,38 @@ function resolveLegacyPiSpecifier(args: { path: string; importer: string }): Leg
 		return undefined;
 	}
 
+	// Re-entrancy guard: Bun routes `Bun.resolveSync` back through registered
+	// onResolve hooks, so the fallbacks below re-enter THIS function with the
+	// same path. When canonical resolution already failed once (e.g. a plugin
+	// importing `@earendil-works/pi-coding-agent` without installing that peer),
+	// each fallback attempt spawns another identical hook call and the stack
+	// overflows. Memoize the failure so the re-entrant call bails out.
+	if (failedLegacyPiResolutions.has(remappedSpecifier)) {
+		return undefined;
+	}
+
 	// Primary: resolve the canonical @oh-my-pi/* specifier from the host binary
 	// location. Works in dev mode and in source-link installs.
 	try {
 		return toLegacyPiResolveResult(resolveCanonicalPiSpecifier(remappedSpecifier));
 	} catch {
-		// Fallback for compiled binary mode: the bundled packages live inside
-		// /$bunfs/root and aren't reachable by filesystem resolution. Prefer the
-		// canonical specifier against the importing file's directory when the
-		// plugin installed @oh-my-pi peer deps, then try the original legacy
-		// specifier for plugins that still vendor only @mariozechner or
-		// @earendil-works peer deps.
-		const importerDir = path.dirname(args.importer);
+		failedLegacyPiResolutions.add(remappedSpecifier);
+	}
+
+	// Fallback for compiled binary mode: the bundled packages live inside
+	// /$bunfs/root and aren't reachable by filesystem resolution. Prefer the
+	// canonical specifier against the importing file's directory when the
+	// plugin installed @oh-my-pi peer deps, then try the original legacy
+	// specifier for plugins that still vendor only @mariozechner or
+	// @earendil-works peer deps.
+	const importerDir = path.dirname(args.importer);
+	try {
+		return toLegacyPiResolveResult(Bun.resolveSync(remappedSpecifier, importerDir));
+	} catch {
 		try {
-			return toLegacyPiResolveResult(Bun.resolveSync(remappedSpecifier, importerDir));
+			return toLegacyPiResolveResult(Bun.resolveSync(args.path, importerDir));
 		} catch {
-			try {
-				return toLegacyPiResolveResult(Bun.resolveSync(args.path, importerDir));
-			} catch {
-				return undefined;
-			}
+			return undefined;
 		}
 	}
 }

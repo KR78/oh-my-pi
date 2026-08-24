@@ -62,6 +62,19 @@ interface PendingMessageRow {
 	data: Record<string, unknown>;
 }
 
+/**
+ * Fields every OpenCode message row needs for the UI to render it:
+ * `parentID` chains an assistant response to its user turn (the session-turn
+ * component groups by it — without it responses are invisible), and `mode`/
+ * `path`/`agent` are required by the AssistantMessage schema.
+ */
+interface OpenCodeMessageContext {
+	/** Id of the last synced user message, or undefined while none is active. */
+	currentUserId: string | undefined;
+	cwd: string;
+	agent: string;
+}
+
 interface PendingPartRow {
 	id: string;
 	messageId: string;
@@ -169,7 +182,7 @@ function assistantTextBlocks(message: AssistantMessage): Array<Record<string, un
 				state: {
 					status: "pending",
 					input: block.arguments,
-					metadata: { title: `${block.name} (imported from OMP)` },
+					metadata: { title: block.name },
 				},
 			});
 		}
@@ -190,7 +203,7 @@ function toolResultState(result: ToolResultMessage): OpenCodeToolPart["state"] {
 		input: {},
 		output: text,
 		error: result.isError ? text : undefined,
-		metadata: { title: `${result.toolName} result (imported from OMP)` },
+		metadata: { title: result.toolName },
 	};
 }
 
@@ -253,6 +266,12 @@ export async function syncSessionToOpencode(
 
 	const ids = new IdSequence();
 
+	const context: OpenCodeMessageContext = {
+		currentUserId: undefined,
+		cwd: manager.getCwd(),
+		agent: "build",
+	};
+
 	function rowsForEntry(
 		entry: SessionEntry,
 		index: number,
@@ -264,13 +283,19 @@ export async function syncSessionToOpencode(
 			const userMessage = message as UserMessage;
 			const messageId = ids.next("msg", timestampMs);
 			const partId = ids.next("prt", timestampMs);
+			context.currentUserId = messageId;
 			return {
 				message: {
 					id: messageId,
 					sessionId: provenance.sourceId,
 					timeCreated: timestampMs,
 					timeUpdated: timestampMs,
-					data: { role: "user", time: { created: timestampMs } },
+					data: {
+						role: "user",
+						time: { created: timestampMs },
+						agent: context.agent,
+						model: { providerID: "omp", modelID: "omp" },
+					},
 				},
 				parts: [
 					{
@@ -279,7 +304,7 @@ export async function syncSessionToOpencode(
 						sessionId: provenance.sourceId,
 						timeCreated: timestampMs,
 						timeUpdated: timestampMs,
-						data: { type: "text", text: `[continued in OMP]\n\n${textFromUserContent(userMessage)}` },
+						data: { type: "text", text: textFromUserContent(userMessage) },
 					},
 				],
 			};
@@ -299,14 +324,34 @@ export async function syncSessionToOpencode(
 			timeCreated: timestampMs,
 			timeUpdated: completed,
 			data: {
+				// UI groups responses under their prompt via parentID; without it
+				// the response renders under no turn at all (session-turn.tsx).
+				parentID: context.currentUserId ?? null,
 				role: "assistant",
+				mode: context.agent,
+				agent: context.agent,
+				path: { cwd: context.cwd, root: context.cwd },
+				cost: 0,
+				tokens: { input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } },
 				providerID: "omp",
 				modelID: assistantMessage.model || "unknown",
+				finish: "stop",
 				time: { created: timestampMs, completed },
 			},
 		};
 		const partRows: PendingPartRow[] = [];
-		for (const [partIndex, part] of messageParts.entries()) {
+		// Native OpenCode assistant messages are bracketed by step-start/step-finish;
+		// the session UI expects this rhythm.
+		partRows.push({
+			id: ids.next("prt", timestampMs),
+			messageId,
+			sessionId: provenance.sourceId,
+			timeCreated: timestampMs,
+			timeUpdated: completed,
+			data: { type: "step-start" },
+		});
+		let partIndex = 0;
+		for (const part of messageParts) {
 			const toolPart = isRecord(part) && part.type === "tool" ? (part as unknown as OpenCodeToolPart) : undefined;
 			if (toolPart && toolPart.state.status === "pending") {
 				// Attach the matching result from the following OMP toolResult entry.
@@ -318,6 +363,7 @@ export async function syncSessionToOpencode(
 					toolPart.state.error = "[no result captured]";
 				}
 			}
+			partIndex += 1;
 			partRows.push({
 				id: ids.next("prt", timestampMs + partIndex),
 				messageId,
@@ -327,6 +373,19 @@ export async function syncSessionToOpencode(
 				data: part as Record<string, unknown>,
 			});
 		}
+		partRows.push({
+			id: ids.next("prt", completed),
+			messageId,
+			sessionId: provenance.sourceId,
+			timeCreated: completed,
+			timeUpdated: completed,
+			data: {
+				type: "step-finish",
+				reason: "stop",
+				tokens: { input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } },
+				cost: 0,
+			},
+		});
 		return { message: row, parts: partRows };
 	}
 
