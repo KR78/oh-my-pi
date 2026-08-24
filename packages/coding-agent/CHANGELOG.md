@@ -7,6 +7,16 @@
 - Added `--from-pi` and `--from-opencode` session imports, also available from `/resume @pi` and `/resume @opencode`. Pi sessions (`~/.pi/agent/sessions`) convert nearly losslessly through the shared replicated-entry lineage; OpenCode sessions (`~/.local/share/opencode/opencode.db`) keep user text, images, thinking, tool calls, and results while dropping runtime-only parts.
 - Added `omp sync-to-opencode [session]`: mirrors the OMP-side continuation of an OpenCode-imported session back into OpenCode's transcript store (with automatic backup and idempotent resume tracking), so a conversation can continue in `opencode` where it left off.
 
+## [18.0.6] - 2026-08-24
+
+### Fixed
+
+- Fixed `Maximum call stack size exceeded` at startup when an installed plugin imports a legacy `@earendil-works/*` specifier without that peer installed: the legacy specifier resolver's fallback chain re-entered its own resolve hook until the stack overflowed. Failed canonical resolutions are now memoized so re-entrant hook calls bail immediately.
+
+### Changed
+
+- `omp sync-to-opencode` now writes OpenCode assistant rows with a proper `parentID` chain, `mode`/`agent`/`path` fields, and `step-start`/`step-finish` part bookends, so synced responses render under their prompts in the OpenCode UI instead of being dropped.
+
 ## [Unreleased]
 
 ## [18.0.3] - 2026-08-23
