@@ -83,6 +83,11 @@ async function buildTarball(): Promise<string> {
 	try {
 		manifest.name = FORK_NAME;
 		manifest.bin = { ...PUBLISH_BIN };
+		// Declare this line as package-manager-distributed so `omp update` keeps
+		// using bun/npm across a major bump. Without `omp.dist`, the updater's
+		// major-version heuristic forces the standalone-binary path, which fetches
+		// GitHub release assets — and the @kr78 fork publishes none, so it 404s.
+		manifest.omp = { ...(manifest.omp as Record<string, unknown> | undefined), dist: "npm" };
 		await Bun.write(MANIFEST, `${JSON.stringify(manifest, null, "\t")}\n`);
 
 		// `bun pm pack` (not `npm pack`) resolves the `catalog:`/`workspace:`
