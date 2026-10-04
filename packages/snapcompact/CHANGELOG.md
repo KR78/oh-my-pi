@@ -2,18 +2,34 @@
 
 ## [Unreleased]
 
-### Added
+## [18.2.9] - 2026-09-22
 
-- Added compat-compiler CLI to manage model identity and capability rules via KDL configuration files
-- Consolidated model identity, capability, and policy resolution into a unified rule-based engine
-- Implemented declarative rule system for provider-specific model behaviors and compatibility constraints
-- Added support for hierarchical cascade resolution of model properties based on class, family, and revision
+### Fixed
+
+- Fixed summaries incorrectly advertising a `¶think:` scope when thinking content is excluded from the archive.
+
+## [18.2.1] - 2026-09-15
 
 ### Changed
 
-- Refactored model policy resolution to be driven by the generated compat rules instead of imperative code
-- Migrated model taxonomy, variant collapse tables, and provider-specific overrides to external KDL files
-- Standardized revision handling and model identification across discovery and runtime components
+- `historyBlocks()` now resolves persisted frame payloads lazily, keeps the newest frames within a byte budget, and drops unresolved blob references instead of sending them to providers ([#10227](https://github.com/can1357/oh-my-pi/pull/10227) by [@lemonleks](https://github.com/lemonleks)).
+
+## [18.1.18] - 2026-09-11
+
+### Fixed
+
+- A snapcompact pass now also strips a superseded Anthropic server-compaction payload (`preserveData.anthropicCompaction`) alongside the OpenAI replacement history, so a stale native summary can never replay ahead of the archived frames.
+
+## [18.1.0] - 2026-09-01
+
+### Added
+
+- Added a declarative compatibility rules system for consistent model identification, capabilities, policies, and provider-specific behavior across model classes, families, and revisions.
+- Added the compat-compiler CLI for managing model identity and capability rules through KDL configuration files.
+
+### Changed
+
+- Standardized model revision handling and compatibility resolution across model discovery and runtime behavior.
 
 ## [17.4.1] - 2026-08-21
 

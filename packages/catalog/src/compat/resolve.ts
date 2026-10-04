@@ -16,7 +16,6 @@
  * fallbacks cover unmatched targets.
  */
 import { Effort, THINKING_EFFORTS } from "../effort";
-import { isFireworksFastModelId } from "../fireworks-model-id";
 import { hostMatchesUrl, modelMatchesHost } from "../hosts";
 import type {
 	Api,
@@ -32,13 +31,18 @@ import type {
 	ResolvedOpenAISharedCompat,
 	ThinkingConfig,
 } from "../types";
-import { isAnthropicSigningProxyUrl, isAzureAnthropicRoute, isOfficialAnthropicApiUrl } from "./anthropic";
+import {
+	isAnthropicSigningProxyUrl,
+	isAzureAnthropicRoute,
+	isBedrockAnthropicRoute,
+	isOfficialAnthropicApiUrl,
+} from "./anthropic";
 import { applyCompatOverrides } from "./apply";
 import { API_COMPAT_RECORDS, AXES, type CompatRecordName } from "./axes";
-import { resolveCascade } from "./cascade";
+import { hasModelScopedEffortsRule, resolveCascade } from "./cascade";
 import { compareRevision, parseRevision, type Revision } from "./revision";
 import { classifyModel, stripThinkingVariantSuffix } from "./taxonomy";
-import type { ModelIdentity, ResolvedAxes, ResolveTarget } from "./types";
+import type { ModelIdentity, RequestPolicy, ResolvedAxes, ResolveTarget } from "./types";
 
 /** Result of resolving one model spec through the compat engine. */
 export interface ResolvedModelPolicy<TApi extends Api = Api> {
@@ -47,6 +51,25 @@ export interface ResolvedModelPolicy<TApi extends Api = Api> {
 	thinking: ThinkingConfig | undefined;
 	/** Catalog-data axis assignments (longContext, priority, …) for generation. */
 	catalog: Record<string, unknown>;
+	/** Request-shaping directives for the selected upstream. */
+	request: RequestPolicy;
+}
+
+/** Request routing context is separate from model identity and deployment. */
+export interface ResolveRoute {
+	upstream?: string;
+}
+
+const REQUEST_AXIS_KEYS = Object.values(AXES)
+	.filter(axis => axis.records?.includes("request"))
+	.map(axis => axis.key);
+
+function resolveRequestPolicy(axes: ResolvedAxes): RequestPolicy {
+	const policy: Record<string, unknown> = {};
+	for (const key of REQUEST_AXIS_KEYS) {
+		if (key in axes.wire) policy[key] = axes.wire[key];
+	}
+	return policy as RequestPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +179,7 @@ function overlayEffortMapAxis(
 }
 
 function effortList(value: unknown): readonly Effort[] | undefined {
-	if (!Array.isArray(value) || value.length === 0) return undefined;
+	if (!Array.isArray(value)) return undefined;
 	const out: Effort[] = [];
 	for (const entry of value) {
 		const effort = THINKING_EFFORTS.find(candidate => candidate === entry);
@@ -221,12 +244,10 @@ function thinkingMode(value: unknown): ThinkingConfig["mode"] | undefined {
 // ---------------------------------------------------------------------------
 
 const GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS = 600_000;
-const DEEPSEEK_REASONING_STREAM_IDLE_TIMEOUT_MS = 300_000;
-const KIMI_REASONING_STREAM_IDLE_TIMEOUT_MS = 300_000;
-const XIAOMI_MIMO_STREAM_IDLE_TIMEOUT_MS = 300_000;
-const ALIBABA_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS = 600_000;
 const LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 
+// Mechanism only: provider ids identify local/proxy endpoint shape, while
+// loopback URL detection handles custom endpoints; neither is model policy.
 const LOCAL_OPENAI_COMPAT_PROVIDERS: Record<string, true> = {
 	"llama.cpp": true,
 	"lm-studio": true,
@@ -234,17 +255,6 @@ const LOCAL_OPENAI_COMPAT_PROVIDERS: Record<string, true> = {
 	ollama: true,
 };
 const PROXY_OPENAI_COMPAT_PROVIDERS: Record<string, true> = { litellm: true };
-const STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS: Record<string, true> = {
-	"llama.cpp": true,
-	"lm-studio": true,
-};
-
-const OPENCODE_WHEN_THINKING: NonNullable<OpenAICompat["whenThinking"]> = {
-	requiresReasoningContentForToolCalls: true,
-	allowsSyntheticReasoningContentForToolCalls: false,
-	reasoningContentField: "reasoning_content",
-};
-
 function hasLocalLoopbackBaseUrl(baseUrl: string | undefined): boolean {
 	if (!baseUrl) return false;
 	let hostname: string;
@@ -262,8 +272,8 @@ function hasLocalLoopbackBaseUrl(baseUrl: string | undefined): boolean {
 	) {
 		return true;
 	}
-	if (/^10\./.test(hostname)) return true;
-	if (/^192\.168\./.test(hostname)) return true;
+	if (hostname.startsWith("10.")) return true;
+	if (hostname.startsWith("192.168.")) return true;
 	if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname)) return true;
 	if (hostname.endsWith(".local")) return true;
 	return false;
@@ -300,27 +310,6 @@ function isOfficialOpenAIEndpoint(provider: string, baseUrl: string): boolean {
 	}
 }
 
-function detectStrictModeSupport(provider: string, baseUrl: string): boolean {
-	if (
-		provider === "openai" ||
-		provider === "openrouter" ||
-		provider === "cerebras" ||
-		provider === "together" ||
-		provider === "github-copilot" ||
-		provider === "zenmux"
-	) {
-		return true;
-	}
-	return (
-		hostMatchesUrl(baseUrl, "openai") ||
-		hostMatchesUrl(baseUrl, "azureOpenAI") ||
-		hostMatchesUrl(baseUrl, "cerebras") ||
-		hostMatchesUrl(baseUrl, "together") ||
-		hostMatchesUrl(baseUrl, "openrouter") ||
-		hostMatchesUrl(baseUrl, "deepseekFamily")
-	);
-}
-
 interface OpenAIDetection {
 	facts: IdentityFacts;
 	isClinePass: boolean;
@@ -340,8 +329,13 @@ interface OpenAIDetection {
 	isOpenRouter: boolean;
 }
 
-function detectOpenAI(spec: ModelSpec<"openai-completions" | "openrouter">, facts: IdentityFacts): OpenAIDetection {
+function detectOpenAI(
+	spec: ModelSpec<"openai-completions" | "openrouter">,
+	facts: IdentityFacts,
+	reasoningCapable: boolean,
+): OpenAIDetection {
 	const provider = spec.provider;
+	const backendProvider = spec.providerType ?? provider;
 	const baseUrl = spec.baseUrl;
 	const hostModel = { provider, baseUrl };
 	const isZai = modelMatchesHost(hostModel, "zai");
@@ -350,10 +344,10 @@ function detectOpenAI(spec: ModelSpec<"openai-completions" | "openrouter">, fact
 	const isXiaomiHost = modelMatchesHost(hostModel, "xiaomi");
 	const isDirectDeepseekApi = modelMatchesHost(hostModel, "deepseekDirect");
 	const isDeepseekFamily = modelMatchesHost(hostModel, "deepseekFamily") || facts.is("deepseek");
-	const isDeepseekReasoning = isDeepseekFamily && Boolean(spec.reasoning);
+	const isDeepseekReasoning = isDeepseekFamily && reasoningCapable;
 	const isLocalOpenAICompatBackend =
-		PROXY_OPENAI_COMPAT_PROVIDERS[provider] !== true &&
-		(LOCAL_OPENAI_COMPAT_PROVIDERS[provider] === true || hasLocalLoopbackBaseUrl(baseUrl));
+		PROXY_OPENAI_COMPAT_PROVIDERS[backendProvider] !== true &&
+		(LOCAL_OPENAI_COMPAT_PROVIDERS[backendProvider] === true || hasLocalLoopbackBaseUrl(baseUrl));
 	return {
 		facts,
 		isClinePass: provider === "cline-pass",
@@ -383,15 +377,16 @@ function detectOpenAI(spec: ModelSpec<"openai-completions" | "openrouter">, fact
 function detectOpenAICompat(
 	spec: ModelSpec<"openai-completions" | "openrouter">,
 	d: OpenAIDetection,
+	reasoningCapable: boolean,
 ): ResolvedOpenAICompat {
 	const provider = spec.provider;
 	const baseUrl = spec.baseUrl;
 	const hostModel = { provider, baseUrl };
 	const facts = d.facts;
 	const isCerebras = modelMatchesHost(hostModel, "cerebras");
+	const isCerebrasHost = hostMatchesUrl(baseUrl, "cerebras");
 	const isKilo = modelMatchesHost(hostModel, "kilo");
 	const isAlibaba = modelMatchesHost(hostModel, "alibabaDashscope");
-	const isNvidiaNim = modelMatchesHost(hostModel, "nvidia");
 	const isXiaomiHost = modelMatchesHost(hostModel, "xiaomi");
 	const isGrok = modelMatchesHost(hostModel, "xai");
 	const isMistral = modelMatchesHost(hostModel, "mistral");
@@ -461,48 +456,44 @@ function detectOpenAICompat(
 			provider === "github-copilot" ||
 			provider === "zenmux");
 
+	// Endpoint-only watchdogs remain here; provider and lineage policy lives in KDL.
 	const streamIdleTimeoutMs =
-		facts.is("glm") && facts.revGte("5") && !facts.family("vision") && (d.isZai || d.isZhipu || d.isOpenCodeHost)
+		facts.is("glm") &&
+		facts.revGte("5") &&
+		!facts.family("vision") &&
+		(hostMatchesUrl(baseUrl, "zai") || hostMatchesUrl(baseUrl, "zhipu") || hostMatchesUrl(baseUrl, "opencode"))
 			? GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS
-			: provider === "alibaba-coding-plan"
-				? ALIBABA_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS
-				: d.isXiaomiMimo
-					? XIAOMI_MIMO_STREAM_IDLE_TIMEOUT_MS
-					: spec.reasoning &&
-							(facts.family("k2.6") || isMoonshotKimiK3 || (isMoonshotKimi && facts.family("k2.7-code")))
-						? KIMI_REASONING_STREAM_IDLE_TIMEOUT_MS
-						: spec.reasoning && d.isDirectDeepseekApi
-							? DEEPSEEK_REASONING_STREAM_IDLE_TIMEOUT_MS
-							: d.isLocalServingBackend
-								? LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS
-								: undefined;
+			: facts.is("mimo") && hostMatchesUrl(baseUrl, "xiaomi")
+				? 300_000
+				: reasoningCapable &&
+					  facts.is("kimi") &&
+					  (facts.family("k3") || facts.family("k2.7-code")) &&
+					  hostMatchesUrl(baseUrl, "moonshotNative")
+					? 300_000
+					: reasoningCapable && facts.is("deepseek") && hostMatchesUrl(baseUrl, "deepseekDirect")
+						? 300_000
+						: d.isLocalServingBackend
+							? LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS
+							: undefined;
 
-	const wireModelIdMode: ResolvedOpenAISharedCompat["wireModelIdMode"] =
-		provider === "firepass"
-			? "firepass"
-			: provider === "fireworks"
-				? // Fireworks "Fast" variants are served from the router namespace,
-					// like Fire Pass, rather than the models/ namespace.
-					isFireworksFastModelId(spec.id)
-					? "firepass"
-					: "fireworks"
-				: d.isClinePass
-					? "cline-pass"
-					: d.isOpenRouter
-						? "openrouter"
-						: "raw";
+	const wireModelIdMode: ResolvedOpenAISharedCompat["wireModelIdMode"] = hostMatchesUrl(baseUrl, "openrouter")
+		? "openrouter"
+		: "raw";
 
-	const thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"] = d.isClinePass
-		? "openai"
-		: (isMoonshotKimi && !isMoonshotKimiK3) || d.isZai || d.isZhipu || d.isXiaomiMimo
+	// Provider and lineage formats are rule-owned; endpoint-only dialects remain here.
+	const thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"] =
+		(facts.is("kimi") && !facts.family("k3") && hostMatchesUrl(baseUrl, "moonshotNative")) ||
+		hostMatchesUrl(baseUrl, "zai") ||
+		hostMatchesUrl(baseUrl, "zhipu") ||
+		(facts.is("mimo") && hostMatchesUrl(baseUrl, "xiaomi"))
 			? "zai"
-			: d.isOpenRouter
+			: hostMatchesUrl(baseUrl, "openrouter")
 				? "openrouter"
-				: isQwen && (isNvidiaNim || provider === "vllm")
+				: isQwen && hostMatchesUrl(baseUrl, "nvidia")
 					? "qwen-chat-template"
-					: isQwen && (isFireworks || d.isVenice)
+					: isQwen && (isFireworks || hostMatchesUrl(baseUrl, "venice"))
 						? "openai"
-						: isAlibaba || isQwen
+						: hostMatchesUrl(baseUrl, "alibabaDashscope") || isQwen
 							? "qwen"
 							: "openai";
 
@@ -511,19 +502,22 @@ function detectOpenAICompat(
 		supportsDeveloperRole: isOpenAIHost || isAzureHost,
 		supportsMultipleSystemMessages: supportsMultipleSystemMessagesDefault,
 		supportsReasoningEffort: !isGrok && !d.isXiaomiMimo && (!(d.isZai || d.isZhipu) || supportsZaiReasoningEffort),
+		// API-conditional: this completions-only Copilot exclusion cannot be a
+		// provider rule without changing Copilot Responses rows.
 		supportsReasoningParams: provider !== "github-copilot",
-		supportsSamplingParams: !(facts.is("openai") && (facts.family("o-series") || facts.revGte("5"))),
-		supportsPenaltyAndStopParams: !(isGrok && Boolean(spec.reasoning)),
+		supportsSamplingParams: true,
+		supportsPenaltyAndStopParams: !(isGrok && reasoningCapable),
 		reasoningEffortMap: {},
-		supportsUsageInStreaming: !isCerebras,
+		supportsUsageInStreaming: !isCerebrasHost,
 		alwaysSendMaxTokens: facts.is("kimi"),
 		disableReasoningOnForcedToolChoice:
 			!d.isClinePass && ((facts.is("kimi") && !isMoonshotKimiK3) || isAnthropicModel),
-		disableReasoningOnToolChoice: !d.isClinePass && isDeepseekFamily && Boolean(spec.reasoning) && !d.isOpenRouter,
+		disableReasoningOnToolChoice: !d.isClinePass && isDeepseekFamily && reasoningCapable && !d.isOpenRouter,
+		disableReasoningWithTools: false,
 		supportsToolChoice: d.isClinePass || !d.isDirectDeepseekReasoning,
 		supportsForcedToolChoice:
 			!d.requiresEnabledThinking && !(d.isOpenCodeHost && d.isDeepseekReasoning) && !(d.isClinePass && isQwen),
-		supportsNamedToolChoice: STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS[provider] !== true,
+		supportsNamedToolChoice: true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: isMistral,
 		requiresAssistantAfterToolResult: isMistral,
@@ -541,23 +535,22 @@ function detectOpenAICompat(
 		filterReasoningHistory: d.isOpenRouter && isAnthropicModel,
 		thinkingKeep: usesMoonshotKimiPreservedThinking ? "all" : undefined,
 		reasoningContentField: d.isClinePass ? "reasoning" : "reasoning_content",
+		mistralReasoningContentParts: undefined,
 		requiresReasoningContentForToolCalls:
 			(facts.is("kimi") && !d.isOpenCodeProvider) ||
-			(isDeepseekFamily && Boolean(spec.reasoning)) ||
+			(isDeepseekFamily && reasoningCapable) ||
 			d.isXiaomiMimo ||
-			(d.isOpenRouter && Boolean(spec.reasoning)),
+			(d.isOpenRouter && reasoningCapable),
 		requiresReasoningContentForAllAssistantTurns:
-			((isDeepseekFamily && Boolean(spec.reasoning)) || d.isXiaomiMimo) && !d.isOpenRouter,
-		allowsSyntheticReasoningContentForToolCalls: (!isDeepseekFamily || !spec.reasoning) && !d.isXiaomiMimo,
+			((isDeepseekFamily && reasoningCapable) || d.isXiaomiMimo) && !d.isOpenRouter,
+		allowsSyntheticReasoningContentForToolCalls: (!isDeepseekFamily || !reasoningCapable) && !d.isXiaomiMimo,
+		// Keep the typed sparse override key present for DeepSeek proxy replay.
+		syntheticReasoningContentFallback: undefined,
 		replayReasoningContent: d.isLocalOpenAICompatBackend,
 		qwenPreserveThinking:
 			(thinkingFormat === "qwen" || thinkingFormat === "qwen-chat-template") && d.isLocalOpenAICompatBackend,
-		qwenTemplateReasoningEffort:
-			(thinkingFormat === "qwen" || thinkingFormat === "qwen-chat-template") &&
-			d.isLocalOpenAICompatBackend &&
-			provider !== "ollama" &&
-			isQwen &&
-			facts.revGte("3.8"),
+		// Template effort support is a reviewed backend × model contract in KDL.
+		qwenTemplateReasoningEffort: false,
 		requiresAssistantContentForToolCalls: facts.is("kimi") || d.isDirectDeepseekReasoning,
 		cacheControlFormat:
 			(d.isClinePass && (isQwen || isAnthropicModel)) || (d.isOpenRouter && isAnthropicModel)
@@ -570,9 +563,15 @@ function detectOpenAICompat(
 		isOpenRouterHost: d.isOpenRouter,
 		wireModelIdMode,
 		isVercelGatewayHost: isVercelGateway,
-		supportsStrictMode: detectStrictModeSupport(provider, baseUrl),
+		supportsStrictMode:
+			hostMatchesUrl(baseUrl, "openai") ||
+			hostMatchesUrl(baseUrl, "azureOpenAI") ||
+			hostMatchesUrl(baseUrl, "cerebras") ||
+			hostMatchesUrl(baseUrl, "together") ||
+			hostMatchesUrl(baseUrl, "openrouter") ||
+			hostMatchesUrl(baseUrl, "deepseekFamily"),
 		extraBody: undefined,
-		toolStrictMode: isCerebras ? "all_strict" : "mixed",
+		toolStrictMode: isCerebrasHost ? "all_strict" : "mixed",
 		toolSchemaFlavor:
 			d.isMoonshotNative || facts.is("kimi")
 				? "moonshot-mfjs"
@@ -583,34 +582,28 @@ function detectOpenAICompat(
 		streamIdleTimeoutMs,
 		stripDeepseekSpecialTokens: facts.is("deepseek") && (provider === "nvidia" || provider === "deepseek"),
 		streamMarkupHealingPattern: detectStreamMarkupHealing(spec.provider, facts, baseUrl),
-		reasoningDeltasMayBeCumulative: /minimax/i.test(provider) || facts.is("minimax"),
-		emptyLengthFinishIsContextError: provider === "ollama",
-		usesOpenAIToolCallIdLimit: provider === "openai",
-		promptCacheSessionHeader: isGrok ? "x-grok-conv-id" : undefined,
-		dropThinkingWhenReasoningEffort: provider === "fireworks",
+		reasoningDeltasMayBeCumulative: false,
+		emptyLengthFinishIsContextError: false,
+		usesOpenAIToolCallIdLimit: false,
+		promptCacheSessionHeader: hostMatchesUrl(baseUrl, "xai") ? "x-grok-conv-id" : undefined,
+		dropThinkingWhenReasoningEffort: false,
 		nativeKimiK3Reasoning: false,
 		zaiReasoningEffortDialect: false,
-		clampOutputToModelMax: false,
+		clampOutputToModelMax: d.isLocalOpenAICompatBackend,
 		stripImageInput: false,
 		thinkingLoopGuard: undefined,
+		rejectRootObjectUnion: false,
+		retryWithoutStrictOnGrammarError: false,
+		supportsPromptCacheKey: false,
 	};
 }
-
-const DSML_HEALING_PROVIDERS: Record<string, true> = {
-	ollama: true,
-	"ollama-cloud": true,
-	nvidia: true,
-	deepseek: true,
-	fireworks: true,
-	nanogpt: true,
-	"opencode-go": true,
-	openrouter: true,
-};
 
 /**
  * Default leaked-markup healer. Kimi/DeepSeek dedicated grammars are keyed on
  * identity class; official OpenAI heals nothing; everything else defaults to
- * the generic `thinking` healer.
+ * the generic `thinking` healer. DSML is DeepSeek's own tool-call grammar, so
+ * every host serving a DeepSeek model gets it — gateways, local backends, and
+ * custom providers alike.
  */
 function detectStreamMarkupHealing(
 	provider: string,
@@ -621,7 +614,7 @@ function detectStreamMarkupHealing(
 	// Kimi ids keep the generic healer, matching the census.
 	const isKimiK2 = facts.is("kimi") && facts.identity.family?.startsWith("k2") === true;
 	if (provider === "kimi-code" || provider === "moonshot" || isKimiK2) return "kimi";
-	if (facts.is("deepseek") && DSML_HEALING_PROVIDERS[provider] === true) return "dsml";
+	if (facts.is("deepseek")) return "dsml";
 	if (isOfficialOpenAIEndpoint(provider, baseUrl)) return undefined;
 	return "thinking";
 }
@@ -663,15 +656,11 @@ function fixupOpenAICompat(
 		compat.omitReasoningEffort = true;
 	}
 
-	const axisWhenThinking = objectPayload(axes.wire.whenThinking);
+	const axisWhenThinking = compatReasoning(spec, axes) ? objectPayload(axes.wire.whenThinking) : undefined;
 	const whenThinkingPolicy =
 		spec.compat?.whenThinking ??
 		axisWhenThinking ??
-		(d.isDirectDeepseekReasoning
-			? { extraBody: { ...compat.extraBody, thinking: { type: "enabled" } } }
-			: d.isOpenCodeProvider && spec.reasoning
-				? OPENCODE_WHEN_THINKING
-				: undefined);
+		(d.isDirectDeepseekReasoning ? { extraBody: { ...compat.extraBody, thinking: { type: "enabled" } } } : undefined);
 	if (whenThinkingPolicy) {
 		const variant: ResolvedOpenAICompat = { ...compat, whenThinking: undefined };
 		applyCompatOverrides(variant, whenThinkingPolicy);
@@ -694,8 +683,9 @@ function resolveOpenAICompletionsPolicy(
 	facts: IdentityFacts,
 	axes: ResolvedAxes,
 ): ResolvedOpenAICompat {
-	const d = detectOpenAI(spec, facts);
-	const compat = detectOpenAICompat(spec, d);
+	const reasoningCapable = compatReasoning(spec, axes);
+	const d = detectOpenAI(spec, facts, reasoningCapable);
+	const compat = detectOpenAICompat(spec, d, reasoningCapable);
 	applyWireAxes(compat, axes.wire, "openai-completions");
 	applyCompatOverrides(compat, spec.compat);
 	overlayEffortMapAxis(compat, axes, spec.compat);
@@ -712,6 +702,7 @@ function resolveOpenAIResponsesPolicy(
 ): ResolvedOpenAIResponsesCompat {
 	const baseUrl = spec.baseUrl ?? "";
 	const provider = spec.provider;
+	const backendProvider = spec.providerType ?? provider;
 	const hostModel = { provider, baseUrl };
 	const isAzure = modelMatchesHost(hostModel, "azureOpenAI");
 	const isOpenRouter = modelMatchesHost(hostModel, "openrouter");
@@ -721,16 +712,24 @@ function resolveOpenAIResponsesPolicy(
 	const supportsPromptCacheBreakpoints =
 		isOfficialOpenAIEndpoint(provider, baseUrl) && facts.is("openai") && facts.revGte("5.6");
 	const thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"] = isOpenRouter ? "openrouter" : "openai";
-	const reasoningCapable = Boolean(spec.reasoning);
+	const reasoningCapable = compatReasoning(spec, axes);
 	const isLocalServingBackend =
-		(PROXY_OPENAI_COMPAT_PROVIDERS[provider] !== true && LOCAL_OPENAI_COMPAT_PROVIDERS[provider] === true) ||
+		(PROXY_OPENAI_COMPAT_PROVIDERS[backendProvider] !== true &&
+			LOCAL_OPENAI_COMPAT_PROVIDERS[backendProvider] === true) ||
 		hasLocalLoopbackBaseUrl(baseUrl);
 	const isAnthropicModel = facts.is("anthropic");
 	const isDeepseekFamily = facts.is("deepseek");
 
 	const compat: ResolvedOpenAIResponsesCompat = {
 		supportsDeveloperRole: isAzure || isOpenAIUrl || hostMatchesUrl(baseUrl, "githubCopilot"),
-		supportsStrictMode: isAzure || detectStrictModeSupport(provider, baseUrl),
+		supportsStrictMode:
+			isAzure ||
+			hostMatchesUrl(baseUrl, "openai") ||
+			hostMatchesUrl(baseUrl, "azureOpenAI") ||
+			hostMatchesUrl(baseUrl, "cerebras") ||
+			hostMatchesUrl(baseUrl, "together") ||
+			hostMatchesUrl(baseUrl, "openrouter") ||
+			hostMatchesUrl(baseUrl, "deepseekFamily"),
 		supportsReasoningEffort: !isXaiHost,
 		supportsLongPromptCacheRetention: isOpenAIUrl,
 		supportsPromptCacheBreakpoints,
@@ -739,12 +738,14 @@ function resolveOpenAIResponsesPolicy(
 		supportsImageDetailOriginal: !isXaiHost && !modelMatchesHost(hostModel, "githubCopilot"),
 		supportsReasoningSummary: !isXaiHost,
 		supportsAllTurnsReasoningContext: false,
+		supportsConfigurationUpdate: false,
+		supportsSteering: false,
 		requiresReasoningOffJuiceInstruction: false,
 		stripImageInput: false,
 		thinkingLoopGuard: undefined,
 		reasoningEffortMap: {},
 		supportsReasoningParams: true,
-		supportsSamplingParams: !(facts.is("openai") && (facts.family("o-series") || facts.revGte("5"))),
+		supportsSamplingParams: true,
 		supportsPenaltyAndStopParams: !isXaiHost,
 		thinkingFormat,
 		reasoningDisableMode: resolveReasoningDisableMode(thinkingFormat),
@@ -753,15 +754,17 @@ function resolveOpenAIResponsesPolicy(
 		filterReasoningHistory: isOpenRouter && isAnthropicModel,
 		disableReasoningOnForcedToolChoice: facts.is("kimi"),
 		disableReasoningOnToolChoice: isDeepseekFamily && reasoningCapable && !isOpenRouter,
+		disableReasoningWithTools: false,
 		supportsToolChoice: true,
 		supportsForcedToolChoice: provider !== "opencode-go" && provider !== "opencode-zen",
-		supportsNamedToolChoice: STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS[provider] !== true,
+		supportsNamedToolChoice: true,
 		reasoningContentField: "reasoning_content",
 		requiresReasoningContentForToolCalls:
 			(facts.is("kimi") || (isDeepseekFamily && reasoningCapable) || (isOpenRouter && reasoningCapable)) &&
 			reasoningCapable,
 		requiresReasoningContentForAllAssistantTurns: isDeepseekFamily && reasoningCapable && !isOpenRouter,
 		allowsSyntheticReasoningContentForToolCalls: !isDeepseekFamily || !reasoningCapable,
+		syntheticReasoningContentFallback: undefined,
 		replayReasoningContent: false,
 		qwenPreserveThinking: false,
 		qwenTemplateReasoningEffort: false,
@@ -777,13 +780,21 @@ function resolveOpenAIResponsesPolicy(
 		wireModelIdMode: isOpenRouter ? "openrouter" : "raw",
 		toolSchemaFlavor: facts.is("kimi") ? "moonshot-mfjs" : undefined,
 		alwaysSendMaxTokens: facts.is("kimi"),
+		clampOutputToModelMax:
+			PROXY_OPENAI_COMPAT_PROVIDERS[backendProvider] !== true &&
+			(LOCAL_OPENAI_COMPAT_PROVIDERS[backendProvider] === true || hasLocalLoopbackBaseUrl(baseUrl)),
 		supportsObfuscationOptOut: isOpenAIUrl || provider === "openai",
+		officialEndpoint: isOfficialOpenAIEndpoint(provider, baseUrl),
+		harmonyLeakMitigation: false,
+		rejectRootObjectUnion: false,
+		retryWithoutStrictOnGrammarError: false,
+		cacheControlFormat: isOpenRouter && isAnthropicModel ? "anthropic" : undefined,
 		stripDeepseekSpecialTokens: facts.is("deepseek") && (provider === "nvidia" || provider === "deepseek"),
 		streamMarkupHealingPattern: detectStreamMarkupHealing(provider, facts, baseUrl),
-		reasoningDeltasMayBeCumulative: /minimax/i.test(provider) || facts.is("minimax"),
-		emptyLengthFinishIsContextError: provider === "ollama",
-		usesOpenAIToolCallIdLimit: provider === "openai",
-		promptCacheSessionHeader: isXaiHost ? "x-grok-conv-id" : undefined,
+		reasoningDeltasMayBeCumulative: false,
+		emptyLengthFinishIsContextError: false,
+		usesOpenAIToolCallIdLimit: false,
+		promptCacheSessionHeader: hostMatchesUrl(baseUrl, "xai") ? "x-grok-conv-id" : undefined,
 		streamFirstEventTimeoutMs: isLocalServingBackend ? 0 : spec.compat?.streamFirstEventTimeoutMs,
 		streamIdleTimeoutMs: isLocalServingBackend
 			? LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS
@@ -835,6 +846,11 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		supportsImageDetailOriginal: compat.supportsImageDetailOriginal,
 		supportsObfuscationOptOut: compat.supportsObfuscationOptOut,
 		supportsAllTurnsReasoningContext: compat.supportsAllTurnsReasoningContext,
+		supportsConfigurationUpdate: compat.supportsConfigurationUpdate,
+		supportsSteering: compat.supportsSteering,
+		officialEndpoint: compat.officialEndpoint,
+		harmonyLeakMitigation: compat.harmonyLeakMitigation,
+		cacheControlFormat: compat.cacheControlFormat,
 		requiresReasoningOffJuiceInstruction: compat.requiresReasoningOffJuiceInstruction,
 		supportsReasoningSummary: compat.supportsReasoningSummary,
 		isVercelGatewayHost: compat.isVercelGatewayHost,
@@ -848,31 +864,46 @@ function resolveAnthropicPolicy(
 ): ResolvedAnthropicCompat {
 	const baseUrl = spec.baseUrl;
 	const official = isOfficialAnthropicApiUrl(baseUrl);
-	const isZai = modelMatchesHost(spec, "zai");
 	const isCopilot = modelMatchesHost(spec, "githubCopilot");
 	const isZenmux = modelMatchesHost(spec, "zenmux");
 	const requiresThinkingEnabled = modelMatchesHost(spec, "moonshotNative") && facts.kimiMandatoryThinking;
-	const isAzure = isAzureAnthropicRoute(baseUrl);
+	const bedrockMessagesApi = isBedrockAnthropicRoute(baseUrl);
+	// Both routes reject the top-level tool `strict` field.
+	const rejectsStrictTools = isAzureAnthropicRoute(baseUrl) || bedrockMessagesApi;
 	const signingEndpoint = official || isCopilot || isZenmux || isAnthropicSigningProxyUrl(baseUrl);
 	const compat: ResolvedAnthropicCompat = {
 		officialEndpoint: official,
 		signingEndpoint,
 		supportsContextManagement: true,
-		disableStrictTools: isAzure,
+		supportsServerCompaction: false,
+		firstPartyProvider: false,
+		supportsOutputEffort: true,
+		disableStrictTools: rejectsStrictTools,
+		// Present as a key so models.yml `compat` can set it; unset unless detected.
+		bedrockMessagesApi: bedrockMessagesApi || undefined,
 		disableAdaptiveThinking: false,
 		allowAnthropicHeaderOverrides: false,
 		supportsEagerToolInputStreaming: official,
 		supportsLongCacheRetention: official,
-		supportsMidConversationSystem: official && facts.anthropicAdaptiveGenAtLeast("4.8"),
+		supportsMidConversationSystem: official && !facts.family("sonnet") && facts.anthropicAdaptiveGenAtLeast("4.8"),
+		supportsTurnScopedSystem: false,
+		supportsMidConversationToolChanges: false,
+		supportsPerMessageEffort: false,
+		supportsThinkingBindingControls: false,
+		supportsBetweenToolsThinking: false,
 		supportsForcedToolChoice: !requiresThinkingEnabled && !facts.family("fable", "mythos"),
-		supportsSamplingParams: !facts.anthropicAdaptiveGenAtLeast("4.7"),
-		requiresToolResultId: isZai,
+		supportsSamplingParams: true,
+		requiresToolResultId: false,
 		requiresThinkingEnabled,
-		replayUnsignedThinking: !signingEndpoint && (Boolean(spec.reasoning) || modelMatchesHost(spec, "deepseekFamily")),
-		escapeBuiltinToolNames: modelMatchesHost(spec, "umans"),
+		replayUnsignedThinking:
+			!signingEndpoint && (compatReasoning(spec, axes) || modelMatchesHost(spec, "deepseekFamily")),
+		escapeBuiltinToolNames: false,
 		injectClaudeCodeInstruction: true,
 		stripImageInput: false,
 		thinkingLoopGuard: undefined,
+		// Present as keys so models.yml `compat` can set them; unset unless a rule assigns them.
+		stripThinkingHistory: undefined,
+		fastMode: undefined,
 		streamIdleTimeoutMs: spec.compat?.streamIdleTimeoutMs,
 	};
 	applyWireAxes(compat, axes.wire, "anthropic-messages");
@@ -881,13 +912,7 @@ function resolveAnthropicPolicy(
 }
 
 const BEDROCK_REASONING_STREAM_IDLE_TIMEOUT_MS = 600_000;
-const BEDROCK_ADAPTIVE_THINKING_STREAM_IDLE_TIMEOUT_MS = 900_000;
-
-function resolveBedrockPolicy(
-	spec: ModelSpec<"bedrock-converse-stream">,
-	facts: IdentityFacts,
-	axes: ResolvedAxes,
-): ResolvedBedrockCompat {
+function resolveBedrockPolicy(spec: ModelSpec<"bedrock-converse-stream">, axes: ResolvedAxes): ResolvedBedrockCompat {
 	// Prompt-cache checkpoint tables are rule-owned (class/family/revision
 	// rules under `on "amazon-bedrock"`); the baseline is the conservative
 	// no-checkpoint shape.
@@ -896,12 +921,10 @@ function resolveBedrockPolicy(
 		supportsLongPromptCacheRetention: false,
 		promptCacheMinimumTokens: 0,
 		promptCacheMaximumCheckpoints: 0,
+		supportsForcedToolChoice: true,
 	};
-	compat.streamIdleTimeoutMs = spec.reasoning
-		? facts.anthropicAdaptiveGenAtLeast("4.7")
-			? BEDROCK_ADAPTIVE_THINKING_STREAM_IDLE_TIMEOUT_MS
-			: BEDROCK_REASONING_STREAM_IDLE_TIMEOUT_MS
-		: undefined;
+	// Reasoning capability is a mechanism gate; adaptive-lineage duration is rule-owned.
+	compat.streamIdleTimeoutMs = compatReasoning(spec, axes) ? BEDROCK_REASONING_STREAM_IDLE_TIMEOUT_MS : undefined;
 	applyWireAxes(compat, axes.wire, "bedrock-converse-stream");
 	applyCompatOverrides(compat, spec.compat);
 	return compat;
@@ -920,15 +943,15 @@ function resolveDevinPolicy(spec: ModelSpec<"devin-agent">, axes: ResolvedAxes):
 
 function resolveGooglePolicy(
 	spec: ModelSpec<"google-generative-ai" | "google-vertex" | "google-gemini-cli">,
-	facts: IdentityFacts,
 	axes: ResolvedAxes,
 ): ResolvedGoogleCompat {
 	const compat: ResolvedGoogleCompat = {
 		supportsFunctionPartId: false,
 		requiresSkipThoughtSignature: false,
+		requiresSkipThoughtSignatureOnFirstFunctionCall: false,
 		dropUnsignedThinking: false,
 		ccaLegacyParametersSchema: false,
-		multimodalFunctionResponse: facts.is("gemini") && facts.revGte("3"),
+		multimodalFunctionResponse: false,
 		flashStreamLeakWorkaround: false,
 		claudeThinkingBetaHeader: false,
 		antigravityClaudeToolMode: false,
@@ -962,27 +985,6 @@ function readCompatEffortMap(compat: CompatOf<Api>): Partial<Record<Effort, stri
 const FIREWORKS_THINKING_EFFORT_MAP: Readonly<Partial<Record<Effort, string>>> = {
 	[Effort.Minimal]: "none",
 };
-const MINIMAX_ANTHROPIC_ADAPTIVE_EFFORT_MAP: Readonly<Partial<Record<Effort, string>>> = {
-	[Effort.Low]: "adaptive",
-	[Effort.Medium]: "adaptive",
-	[Effort.High]: "adaptive",
-};
-
-function detectedThinkingEffortMap<TApi extends Api>(
-	spec: ModelSpec<TApi>,
-	facts: IdentityFacts,
-): Partial<Record<Effort, string>> | undefined {
-	if (spec.api === "anthropic-messages" && facts.is("minimax") && facts.family("m2", "m3")) {
-		return MINIMAX_ANTHROPIC_ADAPTIVE_EFFORT_MAP;
-	}
-	if (
-		(spec.api === "openai-completions" || spec.api === "openrouter") &&
-		modelMatchesHost({ provider: spec.provider, baseUrl: spec.baseUrl ?? "" }, "fireworks")
-	) {
-		return FIREWORKS_THINKING_EFFORT_MAP;
-	}
-	return undefined;
-}
 
 /** Identity/API-derived default control mode; `thinking-mode` rules override. */
 function defaultThinkingMode<TApi extends Api>(spec: ModelSpec<TApi>, facts: IdentityFacts): ThinkingConfig["mode"] {
@@ -1060,6 +1062,8 @@ interface RuleThinking {
 	requiresEffort?: boolean;
 	suppressWhenOff?: boolean;
 	supportsDisplay?: boolean;
+	prefixBinding?: boolean;
+	upgradeNeutral?: boolean;
 }
 
 function readRuleThinking(axes: ResolvedAxes): RuleThinking {
@@ -1078,17 +1082,25 @@ function readRuleThinking(axes: ResolvedAxes): RuleThinking {
 	if (typeof raw.requiresEffort === "boolean") out.requiresEffort = raw.requiresEffort;
 	if (typeof raw.suppressWhenOff === "boolean") out.suppressWhenOff = raw.suppressWhenOff;
 	if (typeof raw.supportsDisplay === "boolean") out.supportsDisplay = raw.supportsDisplay;
+	if (typeof raw.prefixBinding === "boolean") out.prefixBinding = raw.prefixBinding;
+	if (typeof raw.upgradeNeutral === "boolean") out.upgradeNeutral = raw.upgradeNeutral;
 	return out;
+}
+
+/**
+ * Compat-time reasoning capability. `axes.reasoning` also promotes targets on
+ * reviewed effort corrections (the cascade's thinking-axis gate), but compat
+ * may only be repaired where the matching contract opted in with
+ * `thinking-upgrade-neutral`; everywhere else a spec that reports no reasoning
+ * stays the authoritative capability surface.
+ */
+function compatReasoning<TApi extends Api>(spec: ModelSpec<TApi>, axes: ResolvedAxes): boolean {
+	if (spec.reasoning) return true;
+	return axes.reasoning && readRuleThinking(axes).upgradeNeutral === true;
 }
 
 /** Identity-derived `requiresEffort` default (mandatory-reasoning lineages). */
 function impliesMandatoryReasoning(facts: IdentityFacts, modelId: string): boolean {
-	if (facts.is("gemini")) {
-		if (facts.revGte("3")) return true;
-		if (facts.family("pro") && facts.revGte("2.5")) return true;
-	}
-	if (facts.is("openai") && facts.family("o-series")) return true;
-	if (facts.is("minimax") && facts.family("m2")) return true;
 	if (facts.identity.thinkingVariant) return true;
 	// Thinking-variant orphans: a bounded pair token anywhere in the id
 	// (`runtime-thinking-model`, `qwen3-…-thinking-2507`) names the
@@ -1109,7 +1121,18 @@ function resolveThinkingPolicy<TApi extends Api>(
 	axes: ResolvedAxes,
 	compat: CompatOf<TApi>,
 ): ThinkingConfig | undefined {
-	if (!spec.reasoning) return undefined;
+	const rule = readRuleThinking(axes);
+	const explicitThinking =
+		spec.thinking !== undefined && Array.isArray(spec.thinking.efforts) && spec.thinking.efforts.length > 0
+			? spec.thinking
+			: undefined;
+	// An explicit wire vocabulary is authoritative when discovery reports no
+	// reasoning (e.g. Synthetic's `none`-only off-switch): reviewed KDL must
+	// not re-expand it into an unadvertised ladder. Absent metadata is
+	// repaired only where KDL opts in with `thinking-upgrade-neutral`
+	// alongside a reviewed `thinking-efforts` ladder (the cascade upgrade for
+	// stale source capability data); otherwise the neutral default holds.
+	if (!spec.reasoning && (explicitThinking !== undefined || rule.upgradeNeutral !== true)) return undefined;
 	if (
 		spec.provider === "cline-pass" &&
 		compat !== undefined &&
@@ -1119,13 +1142,13 @@ function resolveThinkingPolicy<TApi extends Api>(
 		return undefined;
 	}
 	if (omitsWireReasoningEffort(spec.api, compat)) return undefined;
-	const rule = readRuleThinking(axes);
-	if (spec.thinking && Array.isArray(spec.thinking.efforts) && spec.thinking.efforts.length > 0) {
-		return fillExplicitThinking(spec, facts, compat, spec.thinking, rule);
+	if (explicitThinking !== undefined) {
+		return fillExplicitThinking(spec, facts, compat, explicitThinking, rule);
 	}
 	if (compat !== undefined && "trustExplicitThinkingOnly" in compat && compat.trustExplicitThinkingOnly === true) {
 		return undefined;
 	}
+	if (rule.efforts?.length === 0) return undefined;
 	const config: ThinkingConfig = {
 		mode: rule.mode ?? defaultThinkingMode(spec, facts),
 		efforts: rule.efforts ?? fallbackEfforts(spec, compat),
@@ -1134,18 +1157,24 @@ function resolveThinkingPolicy<TApi extends Api>(
 		throw new Error(`Model ${spec.provider}/${spec.id} resolved to an empty thinking range`);
 	}
 	if (rule.defaultLevel !== undefined) config.defaultLevel = rule.defaultLevel;
-	const effortMap = mergeEffortMap(spec, facts, rule.effortMap, compat, config.efforts);
+	const effortMap = mergeEffortMap(spec, rule.effortMap, compat, config.efforts);
 	if (effortMap !== undefined) config.effortMap = effortMap;
 	if (rule.effortBudgets !== undefined) config.effortBudgets = rule.effortBudgets;
 	const supportsDisplay = rule.supportsDisplay ?? defaultSupportsDisplay(spec, facts);
 	if (supportsDisplay) config.supportsDisplay = true;
+	if (rule.prefixBinding) config.prefixBinding = true;
 	const requiresEffort =
 		rule.requiresEffort ?? (impliesMandatoryReasoning(facts, spec.id) || isQwenTemplateReasoningEffortCompat(compat));
 	if (requiresEffort) config.requiresEffort = true;
 	if (rule.suppressWhenOff) config.suppressWhenOff = true;
 	return config;
 }
-
+/**
+ * Displayable-thinking default: an api-conditioned lineage fact (Anthropic
+ * wire dialects streaming adaptive Claude 4.7+ thinking) that KDL cannot
+ * express — cascade selectors have no api dimension. `thinking-supports-display`
+ * rules override per deployment.
+ */
 function defaultSupportsDisplay<TApi extends Api>(spec: ModelSpec<TApi>, facts: IdentityFacts): boolean {
 	return (
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
@@ -1155,12 +1184,15 @@ function defaultSupportsDisplay<TApi extends Api>(spec: ModelSpec<TApi>, facts: 
 
 function mergeEffortMap(
 	spec: ModelSpec<Api>,
-	facts: IdentityFacts,
 	ruleMap: Partial<Record<Effort, string>> | undefined,
 	compat: CompatOf<Api>,
 	efforts: readonly Effort[],
 ): Partial<Record<Effort, string>> | undefined {
-	const detected = detectedThinkingEffortMap(spec, facts);
+	const detected =
+		(spec.api === "openai-completions" || spec.api === "openrouter") &&
+		modelMatchesHost({ provider: spec.provider, baseUrl: spec.baseUrl ?? "" }, "fireworks")
+			? FIREWORKS_THINKING_EFFORT_MAP
+			: undefined;
 	const configured = readCompatEffortMap(compat);
 	if (detected === undefined && ruleMap === undefined && configured === undefined) return undefined;
 	return filterEffortMap({ ...detected, ...ruleMap, ...configured }, efforts);
@@ -1180,9 +1212,7 @@ function fillExplicitThinking<TApi extends Api>(
 	rule: RuleThinking,
 ): ThinkingConfig {
 	const effortMap =
-		thinking.effortMap === undefined
-			? mergeEffortMap(spec, facts, rule.effortMap, compat, thinking.efforts)
-			: undefined;
+		thinking.effortMap === undefined ? mergeEffortMap(spec, rule.effortMap, compat, thinking.efforts) : undefined;
 	const needsDisplay =
 		thinking.supportsDisplay === undefined && (rule.supportsDisplay ?? defaultSupportsDisplay(spec, facts));
 	const needsRequiresEffort =
@@ -1190,7 +1220,16 @@ function fillExplicitThinking<TApi extends Api>(
 		(rule.requiresEffort ??
 			(impliesMandatoryReasoning(facts, spec.id) || isQwenTemplateReasoningEffortCompat(compat)));
 	const needsDefaultLevel = thinking.defaultLevel === undefined && rule.defaultLevel !== undefined;
-	if (effortMap === undefined && !needsDisplay && !needsRequiresEffort && !needsDefaultLevel) {
+	const needsPrefixBinding = thinking.prefixBinding === undefined && rule.prefixBinding === true;
+	const needsEffortBudgets = thinking.effortBudgets === undefined && rule.effortBudgets !== undefined;
+	if (
+		effortMap === undefined &&
+		!needsDisplay &&
+		!needsRequiresEffort &&
+		!needsDefaultLevel &&
+		!needsPrefixBinding &&
+		!needsEffortBudgets
+	) {
 		return thinking;
 	}
 	const filled: ThinkingConfig = { ...thinking };
@@ -1198,6 +1237,8 @@ function fillExplicitThinking<TApi extends Api>(
 	if (needsDisplay) filled.supportsDisplay = true;
 	if (needsDefaultLevel && rule.defaultLevel !== undefined) filled.defaultLevel = rule.defaultLevel;
 	if (needsRequiresEffort) filled.requiresEffort = true;
+	if (needsPrefixBinding) filled.prefixBinding = true;
+	if (needsEffortBudgets) filled.effortBudgets = rule.effortBudgets;
 	return filled;
 }
 
@@ -1205,9 +1246,14 @@ function fillExplicitThinking<TApi extends Api>(
 // Entry
 // ---------------------------------------------------------------------------
 
-function buildResolveTarget<TApi extends Api>(spec: ModelSpec<TApi>, identity: ModelIdentity): ResolveTarget {
+function buildResolveTarget<TApi extends Api>(
+	spec: ModelSpec<TApi>,
+	identity: ModelIdentity,
+	providerType = spec.providerType ?? spec.provider,
+): ResolveTarget {
 	const target: ResolveTarget = {
-		provider: spec.provider,
+		provider: providerType,
+		api: spec.api,
 		class: identity.class,
 		model: spec.id,
 		reasoning: Boolean(spec.reasoning),
@@ -1221,15 +1267,36 @@ function specUsesApi<TApi extends Api>(spec: ModelSpec<Api>, api: TApi): spec is
 	return spec.api === api;
 }
 
+/** Resolve the request adapter assigned to a discovery backend before materialization. */
+export function resolveDiscoveryApi(spec: ModelSpec<Api>, providerType: string): Api {
+	const identity = resolveIdentity(spec);
+	const discoveryApi = resolveCascade(buildResolveTarget(spec, identity, providerType)).catalog.discoveryApi;
+	return typeof discoveryApi === "string" ? discoveryApi : spec.api;
+}
+
+/**
+ * Catalog-data axis assignments for one model spec — the `catalog` field of
+ * {@link resolveModelPolicy} without resolving the compat and thinking
+ * policies, which dominate its cost on catalog-wide scans.
+ */
+export function resolveCatalogAxes(spec: ModelSpec<Api>): Record<string, unknown> {
+	return resolveCascade(buildResolveTarget(spec, resolveIdentity(spec))).catalog;
+}
+
 /**
  * Resolves the full policy surface for one model spec: structured identity,
  * complete compat record, thinking metadata, and catalog-data corrections.
  */
-export function resolveModelPolicy<TApi extends Api>(spec: ModelSpec<TApi>): ResolvedModelPolicy<TApi>;
-export function resolveModelPolicy(spec: ModelSpec<Api>): ResolvedModelPolicy<Api> {
+export function resolveModelPolicy<TApi extends Api>(
+	spec: ModelSpec<TApi>,
+	route?: ResolveRoute,
+): ResolvedModelPolicy<TApi>;
+export function resolveModelPolicy(spec: ModelSpec<Api>, route?: ResolveRoute): ResolvedModelPolicy<Api> {
 	const identity = resolveIdentity(spec);
 	const facts = new IdentityFacts(identity);
-	const axes = resolveCascade(buildResolveTarget(spec, identity));
+	const target = buildResolveTarget(spec, identity);
+	target.upstream = route?.upstream;
+	const axes = resolveCascade(target);
 	let compat: CompatOf<Api>;
 	if (specUsesApi(spec, "openrouter")) {
 		const chat = resolveOpenAICompletionsPolicy(spec, facts, axes);
@@ -1246,7 +1313,7 @@ export function resolveModelPolicy(spec: ModelSpec<Api>): ResolvedModelPolicy<Ap
 	} else if (specUsesApi(spec, "anthropic-messages")) {
 		compat = resolveAnthropicPolicy(spec, facts, axes);
 	} else if (specUsesApi(spec, "bedrock-converse-stream")) {
-		compat = resolveBedrockPolicy(spec, facts, axes);
+		compat = resolveBedrockPolicy(spec, axes);
 	} else if (specUsesApi(spec, "devin-agent")) {
 		compat = resolveDevinPolicy(spec, axes);
 	} else if (
@@ -1254,7 +1321,7 @@ export function resolveModelPolicy(spec: ModelSpec<Api>): ResolvedModelPolicy<Ap
 		specUsesApi(spec, "google-vertex") ||
 		specUsesApi(spec, "google-gemini-cli")
 	) {
-		compat = resolveGooglePolicy(spec, facts, axes);
+		compat = resolveGooglePolicy(spec, axes);
 	} else {
 		compat = undefined;
 	}
@@ -1263,5 +1330,19 @@ export function resolveModelPolicy(spec: ModelSpec<Api>): ResolvedModelPolicy<Ap
 		compat,
 		thinking: resolveThinkingPolicy(spec, facts, axes, compat),
 		catalog: axes.catalog,
+		request: resolveRequestPolicy(axes),
 	};
+}
+
+/**
+ * Whether reviewed rules know THIS model's effort ladder, as opposed to it
+ * inheriting a provider-wide default or {@link resolveThinkingPolicy} falling
+ * through to the neutral wire ladder.
+ *
+ * Discovery uses this to tell "omp knows this model's tiers" apart from "omp
+ * is guessing them", so catalog-published tiers can correct the guess without
+ * ever overriding reviewed knowledge.
+ */
+export function hasModelScopedEffortLadder<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	return hasModelScopedEffortsRule(buildResolveTarget(spec, resolveIdentity(spec)));
 }

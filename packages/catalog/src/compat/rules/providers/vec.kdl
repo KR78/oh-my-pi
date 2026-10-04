@@ -1,0 +1,11 @@
+// Provider-wire compat for "vec" — our private Anthropic-compatible gateway
+// (ug.vec.run) fronting Umans. Discovery is authoritative: the gateway's
+// `/v1/models` advertises umans-style `capabilities.reasoning`, which the
+// fork's openai-compat patch surfaces as thinking/effort options.
+
+provider "vec" {
+	default-model "umans-coder"
+	env "VEC_GATEWAY_API_KEY"
+	dynamic-models-authoritative #true
+	discovery label="Vec Gateway" allow-unauthenticated=#true
+}

@@ -1,0 +1,12 @@
+// Vec Gateway (ug.vec.run) login: paste an external gateway API key. The
+// models endpoint is public, so the probe only rejects a key that cannot reach
+// the gateway; discovery still requires a non-empty key to run.
+auth "vec" {
+	name "Vec Gateway"
+	login "api-key" {
+		auth-url "https://ug.vec.run"
+		instructions "Paste your ug.vec.run external API key. Keys are issued on the gateway (admin → /admin/keys) or via the seed_keys script."
+		prompt "Paste your Vec Gateway (ug.vec.run) API key" placeholder="ugk-..."
+		validate "models-endpoint" label="Vec Gateway" url="https://ug.vec.run/v1/models"
+	}
+}

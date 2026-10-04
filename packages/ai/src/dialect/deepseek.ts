@@ -1,5 +1,6 @@
 import { parseJsonWithRepair } from "@oh-my-pi/pi-utils";
 import type { Message, ToolCall } from "../types";
+import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { asRecord, mintToolCallId, partialSuffixOverlapAny } from "./coercion";
 import dialectPrompt from "./deepseek.md" with { type: "text" };
 import { assistantTranscriptParts, collectToolResultRun, messageContentText, stringifyJson } from "./rendering";
@@ -34,6 +35,10 @@ const DSML_TOOL_CALLS_OPEN_FULLWIDTH = "<｜DSML｜tool_calls>";
 const DSML_TOOL_CALLS_CLOSE_FULLWIDTH = "</｜DSML｜tool_calls>";
 const DSML_TOOL_CALLS_OPEN_ASCII = "<|DSML|tool_calls>";
 const DSML_TOOL_CALLS_CLOSE_ASCII = "</|DSML|tool_calls>";
+const DSML_INVOKE_CLOSE_FULLWIDTH = "</｜DSML｜invoke>";
+const DSML_INVOKE_CLOSE_ASCII = "</|DSML|invoke>";
+const DSML_PARAMETER_CLOSE_FULLWIDTH = "</｜DSML｜parameter>";
+const DSML_PARAMETER_CLOSE_ASCII = "</|DSML|parameter>";
 
 const CONTROL_TOKENS = [
 	DEEPSEEK_BOS,
@@ -53,6 +58,18 @@ const CONTROL_TOKENS = [
 	DEEPSEEK_TOOL_OUTPUT_END,
 ] as const;
 
+// Bare DSML invoke/parameter close tags with no matching open — leaked into
+// visible text once a session's history is poisoned (issue #10556). Stripped in
+// the `outside` state so they never reach stored assistant content and reinforce
+// the model's XML-protocol mimicry. Inside a well-formed envelope these closers
+// are consumed by the `dsmlInvoke`/`dsmlParam` states and never reach `outside`.
+const DSML_ORPHAN_CLOSE_TOKENS = [
+	DSML_INVOKE_CLOSE_FULLWIDTH,
+	DSML_INVOKE_CLOSE_ASCII,
+	DSML_PARAMETER_CLOSE_FULLWIDTH,
+	DSML_PARAMETER_CLOSE_ASCII,
+] as const;
+
 const OUTSIDE_TOKENS = [
 	DEEPSEEK_TOOL_CALLS_BEGIN,
 	DEEPSEEK_TOOL_CALLS_END,
@@ -63,6 +80,7 @@ const OUTSIDE_TOKENS = [
 	DSML_TOOL_CALLS_OPEN_ASCII,
 	DSML_TOOL_CALLS_CLOSE_FULLWIDTH,
 	DSML_TOOL_CALLS_CLOSE_ASCII,
+	...DSML_ORPHAN_CLOSE_TOKENS,
 	...CONTROL_TOKENS,
 ] as const;
 
@@ -73,8 +91,18 @@ const DSML_SECTION_TOKENS = [
 	"<｜DSML｜invoke",
 	"<|DSML|invoke",
 ] as const;
-const DSML_INVOKE_TOKENS = ["</｜DSML｜invoke>", "</|DSML|invoke>", "<｜DSML｜parameter", "<|DSML|parameter"] as const;
-const DSML_PARAMETER_CLOSE_TOKENS = ["</｜DSML｜parameter>", "</|DSML|parameter>"] as const;
+const DSML_INVOKE_TOKENS = [
+	DSML_INVOKE_CLOSE_FULLWIDTH,
+	DSML_INVOKE_CLOSE_ASCII,
+	"<｜DSML｜parameter",
+	"<|DSML|parameter",
+] as const;
+const DSML_PARAMETER_CLOSE_TOKENS = [DSML_PARAMETER_CLOSE_FULLWIDTH, DSML_PARAMETER_CLOSE_ASCII] as const;
+
+// A DSML invoke/parameter opener in visible text: a call whose `tool_calls`
+// wrapper is missing, so the envelope scanner never consumed it.
+const BARE_DSML_OPEN = /<[｜|]DSML[｜|](?:invoke|parameter)\b/u;
+const VISIBLE_TAIL_LIMIT = 48;
 
 type State =
 	| "outside"
@@ -102,6 +130,15 @@ export class DeepSeekInbandScanner implements InbandScanner {
 	#dsmlParamRaw = "";
 	#rawBlock = "";
 	#stripLeadingWhitespace = false;
+	/**
+	 * Visible text already carries a bare DSML `invoke`/`parameter` opener (a
+	 * malformed call missing its `tool_calls` wrapper). Its closers are then kept
+	 * verbatim instead of stripped as orphans, so the agent loop can find where
+	 * the broken call ends and remove exactly that span, keeping prose after it.
+	 */
+	#bareDsmlOpenVisible = false;
+	/** Last few visible characters, so a bare opener split across chunks is still seen. */
+	#visibleTail = "";
 
 	constructor(options: InbandScannerOptions = {}) {
 		this.#parseThinking = options.parseThinking ?? true;
@@ -178,12 +215,11 @@ export class DeepSeekInbandScanner implements InbandScanner {
 			const match = findEarliestToken(this.#buffer, OUTSIDE_TOKENS);
 			if (!match) {
 				const hold = final ? 0 : partialSuffixOverlapAny(this.#buffer, OUTSIDE_TOKENS);
-				const emit = this.#buffer.slice(0, this.#buffer.length - hold);
-				if (emit.length > 0) events.push({ type: "text", text: emit });
+				this.#emitText(this.#buffer.slice(0, this.#buffer.length - hold), events);
 				this.#buffer = this.#buffer.slice(this.#buffer.length - hold);
 				return;
 			}
-			if (match.index > 0) events.push({ type: "text", text: this.#buffer.slice(0, match.index) });
+			this.#emitText(this.#buffer.slice(0, match.index), events);
 			this.#buffer = this.#buffer.slice(match.index);
 			if (this.#buffer.startsWith(DEEPSEEK_TOOL_CALLS_BEGIN)) {
 				this.#buffer = this.#buffer.slice(DEEPSEEK_TOOL_CALLS_BEGIN.length);
@@ -216,14 +252,36 @@ export class DeepSeekInbandScanner implements InbandScanner {
 				this.#state = "dsmlSection";
 				return;
 			}
+			const orphanClose = this.#matchingOrphanDsmlClose();
+			if (orphanClose) {
+				if (this.#bareDsmlOpenVisible) this.#emitText(orphanClose, events);
+				this.#buffer = this.#buffer.slice(orphanClose.length);
+				continue;
+			}
 			const control = this.#matchingControlToken();
 			if (control) {
 				this.#buffer = this.#buffer.slice(control.length);
+				if (
+					this.#bareDsmlOpenVisible &&
+					(control === DSML_TOOL_CALLS_CLOSE_FULLWIDTH || control === DSML_TOOL_CALLS_CLOSE_ASCII)
+				) {
+					// Closes the malformed call: keep it as its end marker.
+					this.#emitText(control, events);
+					this.#bareDsmlOpenVisible = false;
+					continue;
+				}
 				this.#stripLeadingWhitespace = true;
 				continue;
 			}
 			this.#buffer = this.#buffer.slice(match.token.length);
 		}
+	}
+
+	#emitText(text: string, events: InbandScanEvent[]): void {
+		if (text.length === 0) return;
+		events.push({ type: "text", text });
+		this.#visibleTail = (this.#visibleTail + text).slice(-VISIBLE_TAIL_LIMIT);
+		if (!this.#bareDsmlOpenVisible && BARE_DSML_OPEN.test(this.#visibleTail)) this.#bareDsmlOpenVisible = true;
 	}
 
 	#consumeThinking(final: boolean, events: InbandScanEvent[]): void {
@@ -450,11 +508,7 @@ export class DeepSeekInbandScanner implements InbandScanner {
 	#parseArgs(rawArgs: string): Record<string, unknown> {
 		const trimmed = rawArgs.trim();
 		if (trimmed.length === 0) return {};
-		try {
-			return asRecord(parseJsonWithRepair<unknown>(trimmed));
-		} catch {
-			return {};
-		}
+		return asRecord(parseToolCallArguments(trimmed));
 	}
 
 	#skipWhitespace(): string {
@@ -476,6 +530,13 @@ export class DeepSeekInbandScanner implements InbandScanner {
 			return "\n";
 		}
 		return "";
+	}
+
+	#matchingOrphanDsmlClose(): string | undefined {
+		for (const token of DSML_ORPHAN_CLOSE_TOKENS) {
+			if (this.#buffer.startsWith(token)) return token;
+		}
+		return undefined;
 	}
 
 	#matchingControlToken(): string | undefined {
@@ -574,7 +635,7 @@ function renderThinking(text: string): string {
 function renderTranscript(messages: readonly Message[], options: DialectRenderOptions = {}): string {
 	if (messages.length === 0) return "";
 	let out = DEEPSEEK_BOS;
-	for (let i = 0; i < messages.length; ) {
+	for (let i = 0; i < messages.length;) {
 		const message = messages[i]!;
 		if (message.role === "assistant") {
 			const parts = assistantTranscriptParts(message);
