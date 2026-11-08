@@ -147,6 +147,42 @@ describe("CollabSocket guest room recovery", () => {
 	});
 });
 
+describe("CollabSocket guest refused by an authenticating relay", () => {
+	it("treats 4003 as final and shows the relay's reason", async () => {
+		vi.useFakeTimers();
+		installScriptedWebSocket();
+		const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+		const closes: Array<{ reason: string; willReconnect: boolean }> = [];
+		const socket = guestSocket(key);
+		socket.onClose = (reason, willReconnect) => closes.push({ reason, willReconnect });
+
+		socket.connect();
+		instance(0).open();
+		instance(0).relayClose(4003, "join through the Slack button");
+
+		expect(closes).toEqual([{ reason: "join through the Slack button", willReconnect: false }]);
+		vi.advanceTimersByTime(60_000);
+		expect(ScriptedWebSocket.instances).toHaveLength(1);
+	});
+
+	it("still ends on 4003 when the relay gives no reason", async () => {
+		vi.useFakeTimers();
+		installScriptedWebSocket();
+		const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+		const closes: Array<{ reason: string; willReconnect: boolean }> = [];
+		const socket = guestSocket(key);
+		socket.onClose = (reason, willReconnect) => closes.push({ reason, willReconnect });
+
+		socket.connect();
+		instance(0).open();
+		instance(0).relayClose(4003, "");
+
+		expect(closes).toEqual([{ reason: "refused by the relay", willReconnect: false }]);
+		vi.advanceTimersByTime(60_000);
+		expect(ScriptedWebSocket.instances).toHaveLength(1);
+	});
+});
+
 describe("CollabSocket host room recovery", () => {
 	it("reclaims its room while the relay still holds the dropped connection", async () => {
 		vi.useFakeTimers();

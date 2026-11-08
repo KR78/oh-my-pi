@@ -20,7 +20,13 @@ const RELAY_CLOSE_REASONS: Record<number, string> = {
 	4004: "no such room",
 	4009: "a host is already connected for this room",
 	4029: "room is full",
+	// An authenticating relay refusing this guest (no or bad join ticket). The
+	// relay's own reason says how to get in ("join through the Slack button"),
+	// so it is shown as sent; retrying the same connection can never succeed.
+	4003: "refused by the relay",
 };
+/** Fatal codes whose relay-supplied reason is more useful than the fixed text. */
+const RELAY_REASON_WINS: Record<number, true> = { 4003: true };
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
@@ -645,7 +651,9 @@ export class CollabSocket {
 			this.#scheduleRetry(this.#reclaimAttempt++, HOST_RECLAIM_BACKOFF_MAX_MS);
 			return;
 		}
-		const fatalReason = RELAY_CLOSE_REASONS[code];
+		// Fatality is decided by RELAY_CLOSE_REASONS alone; RELAY_REASON_WINS only picks the text.
+		const fixedReason = RELAY_CLOSE_REASONS[code];
+		const fatalReason = fixedReason !== undefined && RELAY_REASON_WINS[code] && reason ? reason : fixedReason;
 		const closeReason = fatalReason ?? (reason || `connection lost (code ${code})`);
 		const retryRoom = this.#opts.role === "guest" && (code === 4001 || (code === 4004 && this.#retryMissingRoom));
 		if (retryRoom) {

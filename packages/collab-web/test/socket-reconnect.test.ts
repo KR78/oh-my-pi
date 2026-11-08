@@ -100,6 +100,34 @@ describe("browser guest room recovery", () => {
 		}
 	});
 
+	it("ends, without retrying, when the relay refuses the guest with 4003", () => {
+		vi.useFakeTimers();
+		installScriptedWebSocket();
+		const client = new GuestClient(LINK, "tester");
+
+		client.connect();
+		instance(0).open();
+		instance(0).relayClose(4003, "join through the Slack button");
+
+		expect(client.getSnapshot()).toMatchObject({ phase: "ended", endedReason: "join through the Slack button" });
+		vi.advanceTimersByTime(60_000);
+		expect(ScriptedWebSocket.instances).toHaveLength(1);
+	});
+
+	it("ends on 4003 with a fallback reason when the relay sends none", () => {
+		vi.useFakeTimers();
+		installScriptedWebSocket();
+		const client = new GuestClient(LINK, "tester");
+
+		client.connect();
+		instance(0).open();
+		instance(0).relayClose(4003, "");
+
+		expect(client.getSnapshot()).toMatchObject({ phase: "ended", endedReason: "refused by the relay" });
+		vi.advanceTimersByTime(60_000);
+		expect(ScriptedWebSocket.instances).toHaveLength(1);
+	});
+
 	it("ends an initial join when the room does not exist", () => {
 		vi.useFakeTimers();
 		installScriptedWebSocket();
