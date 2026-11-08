@@ -62,6 +62,19 @@ A room can also end on its own: the relay closes it for good, or the host's send
 
 Guest ownership begins before replica activation and lasts through restoration of the previous local session. Neither joining, resynchronizing, nor a failed join may publish the replica as a local host. Leaving waits for restoration; a restoration failure is reported and keeps hosting blocked. An explicit stop during restoration suppresses its pending automatic restart without cancelling the restoration itself.
 
+### Headless runs (`--mode json`, `-p`, `--mode rpc`)
+
+`collab.autoStart` applies to non-interactive runs too, from any settings layer (`config.yml`, project settings, or a `--config` overlay — the usual way for an embedder to switch it on for one run). The room is installed before extension `session_start` hooks run and connects in the background; guests can prompt and interrupt once startup has finished, exactly as in the TUI. A relay that is unreachable never delays or fails the run.
+
+When the relay opens a room, the run reports it once:
+
+- `--mode json`: a line in the event stream, `{"type":"collab_room","access":"control","webLink":"…","link":"…","viewWebLink":"…","viewLink":"…","generation":1,"roomId":"…","relayUrl":"wss://…","viewSecret":"…","controlSecret":"…"}`.
+- `--mode rpc`: the same object as a frame on stdout (not subject to `set_event_filter`).
+- `-p` text mode prints nothing extra: its stdout is the answer.
+- If `OMP_COLLAB_LINK_FILE` is set, the same object is written to that path (mode `0600`, atomically), rewritten when the room rotates, and deleted when it stops.
+
+`webLink`/`link` carry `access`; a `view` room never exposes `controlSecret`. Every link is `<relayUrl>/r/<roomId>.<secret>` (web links wrap it in `<web>/#…`), with `viewSecret` = base64url(room key) and `controlSecret` = base64url(room key ∥ write token), so an embedder can mint its own URLs from the parts. The link is written only to those two places, never to stderr or the log. When the run ends (JSON run finished, RPC stdin EOF, or a signal), guests get a goodbye and the link file is removed before the process exits.
+
 ### Listing active local hosts
 
 Suspension suppresses session data, joins, and guest actions; it does not suppress termination of an existing room-local dialog. An ended dialog carries only its request ID, so guests can dismiss it even if `/resume` later rolls back. The first authenticated answer to an existing dialog is retained while the target session is provisional and applied only if the original room resumes with the writer still authorized. Commit, stop, and local cancellation cannot apply that answer to another session. Joins during that provisional window must be retried once it settles. `/collab status` prints the room's published access level, so a view-only room never exposes its internal control link through status.
@@ -186,6 +199,7 @@ The relay is a small content-blind Go service. It keeps no state beyond live con
 - [`src/collab/protocol.ts`](../packages/coding-agent/src/collab/protocol.ts), [`crypto.ts`](../packages/coding-agent/src/collab/crypto.ts), [`relay-client.ts`](../packages/coding-agent/src/collab/relay-client.ts) — frames, links, encryption, and transport
 - [`src/collab/registry.ts`](../packages/coding-agent/src/collab/registry.ts) — private local host discovery
 - [`src/collab/settings.ts`](../packages/coding-agent/src/collab/settings.ts) — `collab.*` defaults
+- [`src/collab/headless.ts`](../packages/coding-agent/src/collab/headless.ts), [`context.ts`](../packages/coding-agent/src/collab/context.ts) — hosting for `--mode json`/`rpc` and the context slice hosting needs
 - [`packages/collab-web`](../packages/collab-web/) — browser guest and local development relay
 
 ## Architecture notes

@@ -13,8 +13,8 @@
 import { randomBytes } from "node:crypto";
 import { logger } from "@oh-my-pi/pi-utils";
 import { sanitizeDisplayLine } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
-import type { InteractiveModeContext } from "../modes/types";
 import { TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { CollabHostContext } from "./context";
 import { CollabHost, CollabHostStoppedError, CollabRelayUnavailableError } from "./host";
 import type { CollabAccess } from "./registry";
 
@@ -40,9 +40,24 @@ export interface CollabStartOptions {
 	relay?: string;
 }
 
+/**
+ * Observers for rooms this controller opens and retires. A non-interactive
+ * runner has no status line to show the link on, so it learns about each room
+ * here and reports it on its own channel; the interactive mode passes none.
+ */
+export interface CollabControllerHooks {
+	/** The relay opened `host` and it is published: its links are live. */
+	onRoomOpened?(host: CollabHost): void;
+	/** A room previously reported by {@link onRoomOpened} has stopped or ended. */
+	onRoomClosed?(host: CollabHost): void;
+}
+
 export class CollabController {
 	readonly instanceId: string;
-	#ctx: InteractiveModeContext;
+	#ctx: CollabHostContext;
+	readonly #hooks: CollabControllerHooks;
+	/** Rooms reported open and not yet reported closed. */
+	readonly #openRooms = new Set<CollabHost>();
 	#generation = 0;
 	#host: CollabHost | undefined;
 	/** Serializes stop/start sequences so a rotation never interleaves with another. */
@@ -63,8 +78,9 @@ export class CollabController {
 	#lastRelaunchCauseAt: number | undefined;
 	#relaunchTimer: Timer | undefined;
 
-	constructor(ctx: InteractiveModeContext) {
+	constructor(ctx: CollabHostContext, hooks: CollabControllerHooks = {}) {
 		this.#ctx = ctx;
+		this.#hooks = hooks;
 		// 64 random bits: unique per process on one machine, short enough for `omp collab link <id>` and socket paths.
 		this.instanceId = randomBytes(8).toString("hex");
 	}
@@ -182,7 +198,12 @@ export class CollabController {
 			// A completed teardown may reject on its final UI update. Do not
 			// make every later operation await that same cached rejection.
 			if (host.stopped && this.#host === host) this.#host = undefined;
+			if (host.stopped) this.#reportClosed(host);
 		}
+	}
+
+	#reportClosed(host: CollabHost): void {
+		if (this.#openRooms.delete(host)) this.#hooks.onRoomClosed?.(host);
 	}
 
 	/** Resolves once no stop/start sequence is in flight. */
@@ -260,6 +281,10 @@ export class CollabController {
 			if (err instanceof CollabRelayUnavailableError && this.#generation === host.generation) this.#generation--;
 			throw err;
 		}
+		if (!host.ending) {
+			this.#openRooms.add(host);
+			this.#hooks.onRoomOpened?.(host);
+		}
 		return host;
 	}
 
@@ -310,6 +335,7 @@ export class CollabController {
 	 * `#launch` waits for the ended room to finish withdrawing first.
 	 */
 	#onHostEnded(host: CollabHost): void {
+		this.#reportClosed(host);
 		if (host !== this.#host) return;
 		this.#scheduleRelaunch(this.#stopEpoch);
 	}

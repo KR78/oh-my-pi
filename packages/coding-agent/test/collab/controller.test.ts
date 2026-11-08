@@ -319,6 +319,37 @@ describe("interactive collaboration startup", () => {
 		expect(await registry.listCollabHosts({ dir: tmp })).toMatchObject([{ access: "view", generation: 1 }]);
 	});
 
+	it("drives its own status line and never writes the headless link file", async () => {
+		const linkFile = path.join(tmp, "interactive-link.json");
+		const previousLinkFile = process.env.OMP_COLLAB_LINK_FILE;
+		process.env.OMP_COLLAB_LINK_FILE = linkFile;
+		try {
+			mode = new InteractiveMode(
+				testSession.session,
+				"test",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				new Composer({ terminal: new VirtualTerminal() }),
+			);
+			spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+			const collabStatus = spyOn(mode.statusLine, "setCollabStatus");
+			await mode.init({ suppressWelcomeIntro: true, autoStartCollab: true });
+			await mode.collabController.idle();
+
+			expect(mode.collabHost?.relayConnected).toBe(true);
+			expect(collabStatus).toHaveBeenCalledWith({ role: "host", participantCount: 1 });
+			await expect(fs.stat(linkFile)).rejects.toThrow();
+			await mode.collabController.shutdown("done");
+			expect(collabStatus).toHaveBeenLastCalledWith(null);
+			await expect(fs.stat(linkFile)).rejects.toThrow();
+		} finally {
+			restoreEnv("OMP_COLLAB_LINK_FILE", previousLinkFile);
+		}
+	});
+
 	it.each(["/collab", "/join"])(
 		"%s recovers a real session whose persistence failed before notifying observers",
 		async command => {

@@ -8,6 +8,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { $flag, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
+import { type HeadlessCollab, startHeadlessCollab } from "../collab/headless";
 import type { MCPManager } from "../mcp/manager";
 import { resolveMCPTimeoutMs } from "../mcp/timeout";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
@@ -118,9 +119,13 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		signalReason = reason;
 		return session.dispose({ reason, mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
 	});
+	const collab: { host?: HeadlessCollab } = {};
 	try {
-		return await runPrintModeCore(session, options, () => signalReason !== undefined);
+		return await runPrintModeCore(session, options, () => signalReason !== undefined, collab);
 	} finally {
+		// The normal path already stopped hosting before draining stdout; this
+		// covers a run that threw, so guests are never left in a dead room.
+		await collab.host?.shutdown("host exited");
 		cancelSignalTeardown();
 	}
 }
@@ -129,6 +134,7 @@ async function runPrintModeCore(
 	session: AgentSession,
 	options: PrintModeOptions,
 	signalTeardownActive: () => boolean,
+	collab: { host?: HeadlessCollab },
 ): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages, printThoughts, planYolo = false } = options;
 
@@ -157,6 +163,12 @@ async function runPrintModeCore(
 			writeStdoutLine(`${JSON.stringify(header)}\n`);
 		}
 	}
+	// `collab.autoStart` hosts headless runs too. The room is installed before
+	// extension hooks run, as in the TUI; only JSON mode announces it on stdout
+	// (text mode's stdout is the answer), and the link file works in both.
+	collab.host = startHeadlessCollab(session, {
+		emit: mode === "json" ? event => writeStdoutLine(`${JSON.stringify(event)}\n`) : undefined,
+	});
 	// Set up extensions for print mode (no UI, no command context)
 	await initializeExtensions(session, {
 		mode: mode === "json" ? "json" : "print",
@@ -268,6 +280,9 @@ async function runPrintModeCore(
 		}
 	}
 
+	// Startup is over: guests may prompt and interrupt from here on.
+	collab.host?.startupComplete();
+
 	let wroteTextWorkingIndicator = false;
 	const writeTextWorkingIndicator = (): void => {
 		if (mode !== "text" || wroteTextWorkingIndicator) return;
@@ -349,6 +364,9 @@ async function runPrintModeCore(
 	}
 	// Error spans must reach the exporter; the postmortem `exit` handler can't await.
 	if (terminalFailure) await flushTelemetryExport();
+
+	// Guests get their goodbye while the session is still alive to report it.
+	await collab.host?.shutdown("run finished");
 
 	// Block shutdown until every serialized stdout write (including the final
 	// agent_end and late JSON advisor events) has drained; process.exit would

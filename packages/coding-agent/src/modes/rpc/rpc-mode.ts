@@ -18,6 +18,7 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { $env, isRecord, logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { startHeadlessCollab } from "../../collab/headless";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
 	type ExtensionAskDialogQuestion,
@@ -1488,6 +1489,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	const onPromptError = (id: string | undefined, command: string) => (promptError: Error) =>
 		output(error(id, command, promptError.message));
 
+	// `collab.autoStart` hosts RPC sessions too: installed before extension hooks
+	// run, as in the TUI, and announced as a `collab_room` frame that bypasses
+	// `set_event_filter` like the other non-session frames.
+	const collab = startHeadlessCollab(session, { emit: event => output(event), subagentEventBus });
+
 	// Set up extensions with RPC-based UI context
 	await initializeExtensions(session, {
 		mode: "rpc",
@@ -1541,6 +1547,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	});
 	await goalController.reconcile();
 	await goalController.settled();
+	// Startup is over: guests may prompt and interrupt from here on.
+	collab?.startupComplete();
 
 	// Discriminates a store failure from any other dispose rejection below.
 	let persistenceFailure: Error | undefined;
@@ -1562,6 +1570,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	 */
 	const disposeAndExit = async (): Promise<never> => {
 		try {
+			// Guests get their goodbye while the session is still alive to report it.
+			await collab?.shutdown("run finished");
 			// Close the realtime call (microphone, socket) before the session it delegates into.
 			await liveBridge.stop();
 			await session.dispose();
