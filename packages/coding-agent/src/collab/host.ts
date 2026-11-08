@@ -51,6 +51,7 @@ import {
 	publishCollabHost,
 } from "./registry";
 import { CollabSocket } from "./relay-client";
+import { cfgCollabRequireAttestation } from "./settings";
 import {
 	COLLAB_ENTRY_OMITTED_CUSTOM_TYPE,
 	copyForReplication,
@@ -170,6 +171,30 @@ export interface CollabHostOptions {
 	onEnded?: () => void;
 }
 
+/** Identity an authenticating relay attached to a guest's `peer-joined`. */
+interface PeerAttestation {
+	user: string;
+	name: string | undefined;
+	access: CollabAccess;
+}
+
+/**
+ * Read an attestation from a `peer-joined` message. All-or-nothing: a message
+ * with a user but an unknown access level grants nothing rather than being
+ * half-trusted, and the stock relay's bare message yields none.
+ */
+function parseAttestation(msg: { user?: unknown; name?: unknown; access?: unknown }): PeerAttestation | undefined {
+	if (typeof msg.user !== "string" || !msg.user.trim()) return undefined;
+	if (msg.access !== "view" && msg.access !== "control") return undefined;
+	const name = typeof msg.name === "string" && msg.name.trim() ? msg.name : undefined;
+	return { user: msg.user.trim(), name, access: msg.access };
+}
+
+/** Same bound the self-declared hello name has always had. */
+function cleanDisplayName(name: string): string {
+	return name.trim().slice(0, 64);
+}
+
 /**
  * `start()` rejects with this when `stop()` deliberately ends the room while it
  * is still connecting (session switch, access upgrade, `/collab stop`,
@@ -226,7 +251,16 @@ export class CollabHost {
 	 * yet, and after a shed, when the peer leaves the participant list but is
 	 * still owed a resync error.
 	 */
-	#peers = new Map<number, { name: string; canWrite: boolean }>();
+	#peers = new Map<number, { name: string; canWrite: boolean; user?: string }>();
+	/**
+	 * Who the relay says joined, keyed by peer id, recorded from `peer-joined`
+	 * before that peer's hello can be dispatched (controls are handled
+	 * synchronously, frames only after decryption). When present it, not the
+	 * link or the hello, decides the peer's name and caps its write access: an
+	 * authenticating relay knows which user it admitted, while anyone holding a
+	 * forwarded control link can claim any name. Cleared with the peer.
+	 */
+	#attested = new Map<number, PeerAttestation>();
 	/**
 	 * Never reset, including across a room recreation: ids must not be reissued, or
 	 * a late `ui-response` carrying an old id would settle an unrelated new request.
@@ -406,6 +440,7 @@ export class CollabHost {
 		socket.onFrame = (frame, fromPeer) => this.#handleFrame(frame, fromPeer);
 		socket.onControl = msg => {
 			if (msg.t === "peer-left") this.#handlePeerLeft(msg.peer);
+			else if (msg.t === "peer-joined") this.#handlePeerJoined(msg);
 		};
 		socket.onClose = (reason, willReconnect) => {
 			this.#relayConnected = false;
@@ -583,6 +618,7 @@ export class CollabHost {
 		for (const pending of this.#pendingUi.values()) pending.settle({ kind: "unavailable" });
 		this.#pendingUi.clear();
 		this.#peers.clear();
+		this.#attested.clear();
 		this.#socket?.close();
 		this.#socket = null;
 		this.#ctx.statusLine.setCollabStatus(null);
@@ -750,9 +786,24 @@ export class CollabHost {
 			);
 			return;
 		}
-		const cleanName = name.trim().slice(0, 64) || `guest-${fromPeer}`;
-		const canWrite = this.#verifyWriteToken(writeToken);
-		this.#peers.set(fromPeer, { name: cleanName, canWrite });
+		const attested = this.#attested.get(fromPeer);
+		const tokenValid = this.#verifyWriteToken(writeToken);
+		let cleanName: string;
+		let canWrite: boolean;
+		if (attested) {
+			// The relay's word on who this is and what they may do; the link
+			// must still carry a valid write token, so attestation narrows
+			// access and never widens it.
+			cleanName = cleanDisplayName(attested.name ?? attested.user) || `guest-${fromPeer}`;
+			canWrite = tokenValid && attested.access === "control";
+		} else if (cfgCollabRequireAttestation.get(this.#ctx.settings)) {
+			cleanName = `unverified-${fromPeer}`;
+			canWrite = false;
+		} else {
+			cleanName = cleanDisplayName(name) || `guest-${fromPeer}`;
+			canWrite = tokenValid;
+		}
+		this.#peers.set(fromPeer, { name: cleanName, canWrite, user: attested?.user });
 
 		// Enqueue the snapshot synchronously so live traffic cannot overtake it;
 		// materialize its chunks only as the transport drains.
@@ -904,7 +955,9 @@ export class CollabHost {
 		const name = peer.name;
 		const content: string | (TextContent | ImageContent)[] =
 			images && images.length > 0 ? [{ type: "text", text }, ...images] : text;
-		const details: CollabPromptDetails = { from: name };
+		// Identity rides in details (the transcript badge), never in the text
+		// the model reads.
+		const details: CollabPromptDetails = peer.user ? { from: name, user: peer.user } : { from: name };
 		if (this.#ctx.session.isStreaming) {
 			this.#ctx.updatePendingMessagesDisplay();
 			this.#ctx.ui.requestRender();
@@ -975,10 +1028,14 @@ export class CollabHost {
 	 */
 	#handleRoomRecreated(): void {
 		if (this.#stopped) return;
-		if (this.#peers.size === 0 && this.#pendingUi.size === 0) return;
+		if (this.#peers.size === 0 && this.#pendingUi.size === 0) {
+			this.#attested.clear();
+			return;
+		}
 		// Identities first: settle() fans `ui-request-end` out over #peers, and those
 		// ids belong to the room that just went away.
 		this.#peers.clear();
+		this.#attested.clear();
 		// The relay closed everyone who could answer, so an outstanding ask has no
 		// recipient. Leaving it pending hangs callers that await it without racing a
 		// local dialog, and #handleHello re-poses every pending request to the next
@@ -991,10 +1048,18 @@ export class CollabHost {
 		this.#scheduleStateBroadcast();
 	}
 
+	/** Record the relay's attestation, if any, before the peer's hello is dispatched. */
+	#handlePeerJoined(msg: { peer: number; user?: unknown; name?: unknown; access?: unknown }): void {
+		const attestation = parseAttestation(msg);
+		if (attestation) this.#attested.set(msg.peer, attestation);
+		else this.#attested.delete(msg.peer);
+	}
+
 	/** Identity and UI only: the socket already retired the peer and dropped its backlog. */
 	#handlePeerLeft(peer: number): void {
 		const name = this.#peers.get(peer)?.name;
 		this.#peers.delete(peer);
+		this.#attested.delete(peer);
 		// Relay controls arrive outside the normal frame handler.
 		if (!this.#guestTrafficAllowed()) return;
 		if (name) this.#ctx.session.emitNotice("info", `${name} left the collab session`, "collab");

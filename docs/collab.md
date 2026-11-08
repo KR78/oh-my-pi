@@ -151,6 +151,17 @@ Guests with a full link can:
 - use [Agent Hub](./agent-hub.md) against the host's subagents: live table and progress, chat (steers the host's subagent), kill, revive, and transcript viewing (fetched from the host on demand).
 - answer host interactive `select` and `editor` requests. The host broadcasts each pending request only to writable guests; the first submitted or cancelled response settles it and dismisses the other presentations.
 
+### Relay-attested guests
+
+An authenticating relay can tell the host who each guest is: its `peer-joined` control message may carry `user` (a stable user id), `name` (display name), and `access` (`view` or `control`) alongside `peer`. When it does, that attestation decides the guest's identity, not the link and not the guest's own hello:
+
+- The guest may write only if its link carries a valid write token **and** the attested `access` is `control`. An attested `view` makes even a control-link holder read-only; attestation never grants writing to a view link.
+- Its name in the participant list, join notice, and prompt badge is the attested `name` (falling back to `user`), never the name it sent in `hello`.
+- Its prompts carry `details: { from: <name>, user: <id> }`; the text the model reads is the guest's text, unchanged.
+- An attestation missing `user` or with any other `access` value is ignored as a whole.
+
+With `collab.requireAttestation` on, a guest the relay did not attest is read-only and appears as `unverified-<peer>`. Off (the default) and without attestation, guests are trusted exactly as described above. The stock relay sends no attestation.
+
 Guests with a view-only link can read everything live — back-transcript, streaming text, tool cards, subagent transcripts — but the host rejects prompting, interrupting, and agent control from them.
 
 Advisor records are not guest-visible subagents: they are excluded from roster snapshots and transcript fetches, and advisor chat/kill/revive commands are rejected.
@@ -174,6 +185,7 @@ Set `collab.webUrl` when the browser UI is hosted separately from the websocket 
 | `collab.webUrl`       | empty                 | Browser UI URL for `/collab` links; empty derives from relay; explicit `http://` is allowed only for localhost |
 | `collab.displayName`  | OS username           | Name shown to other participants                                                                               |
 | `collab.autoStart`    | `off`                 | `view` / `control`: host every interactive session as it starts and publish it to the local registry            |
+| `collab.requireAttestation` | `false`         | Guests the relay did not attest are read-only and shown as `unverified-<peer>` (see Relay-attested guests)      |
 | `share.serverUrl`     | `https://my.omp.sh/s` | Share viewer/upload base used by `/share` (links are `<base>/<id>#<key>`)                                      |
 | `share.store`         | `blob`                | `/share` uploads to the blob server; `gist` uses an authenticated secret gist with blob fallback             |
 | `share.redactSecrets` | `true`                | Run the secret obfuscator over `/share` snapshots before upload                                                |
@@ -187,7 +199,7 @@ For local protocol development, this repository includes a source-available, Web
 The relay is a small content-blind Go service. It keeps no state beyond live connections and exposes:
 
 - `GET /` — the static collab-web guest client (target of the `/collab` deep link),
-- `GET /r/<roomId>?role=host|guest` — WebSocket upgrade,
+- `GET /r/<roomId>?role=host|guest` — WebSocket upgrade (control messages to the host: `{"t":"peer-joined","peer":N}` / `{"t":"peer-left","peer":N}`; an authenticating relay may add `user`, `name`, `access` to `peer-joined`),
 - `POST /s` / `GET /s/<id>` / `GET /s/<id>/raw` — `/share` blob upload, viewer page, and blob fetch,
 - `GET /healthz` — liveness.
 

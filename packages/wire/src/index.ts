@@ -171,7 +171,10 @@ export const COLLAB_PROMPT_MESSAGE_TYPE = "collab-prompt";
 
 /** `details` shape of `custom_message` entries with `customType === "collab-prompt"`. */
 export interface CollabPromptDetails {
+	/** Display name of the guest who sent the prompt. */
 	from?: string;
+	/** Relay-attested user id of that guest, when the relay authenticated it. Display-only. */
+	user?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -441,8 +444,15 @@ export interface ParsedCollabLink {
 // Relay control messages (TEXT JSON, unencrypted, no session data)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Relay → host control message. */
-export type RelayControlToHost = { t: "peer-joined" | "peer-left"; peer: number };
+/**
+ * Relay → host control message. An authenticating relay may attest who joined
+ * on `peer-joined` (`user`, `name`, `access`); the stock relay sends only
+ * `t` + `peer`. The host treats the extra fields as untrusted shape and
+ * ignores an attestation it cannot fully parse.
+ */
+export type RelayControlToHost =
+	| { t: "peer-joined"; peer: number; user?: string; name?: string; access?: "view" | "control" }
+	| { t: "peer-left"; peer: number };
 /** Relay → guest control message. */
 export type RelayControlToGuest = { t: "room-closed" };
 export type RelayControlMessage = RelayControlToHost | RelayControlToGuest;

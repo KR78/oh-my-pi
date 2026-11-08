@@ -91,6 +91,11 @@ export class FakeWebSocket {
 
 /** Single-room in-memory relay mirroring the production forwarding contract. */
 export class InMemoryRelay {
+	/**
+	 * Extra fields an authenticating relay adds to `peer-joined` (e.g. a verified
+	 * user and the access it granted). Unset: the stock relay's bare message.
+	 */
+	attest?: (peerId: number) => Record<string, unknown> | undefined;
 	#host: FakeWebSocket | null = null;
 	readonly #guests = new Map<number, FakeWebSocket>();
 	#nextPeerId = 1;
@@ -102,7 +107,7 @@ export class InMemoryRelay {
 		}
 		ws.peerId = this.#nextPeerId++;
 		this.#guests.set(ws.peerId, ws);
-		this.#host?.deliverControl(JSON.stringify({ t: "peer-joined", peer: ws.peerId }));
+		this.#host?.deliverControl(JSON.stringify({ ...this.attest?.(ws.peerId), t: "peer-joined", peer: ws.peerId }));
 	}
 
 	forward(from: FakeWebSocket, bytes: Uint8Array): void {

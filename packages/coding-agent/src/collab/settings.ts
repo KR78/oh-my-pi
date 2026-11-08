@@ -43,6 +43,19 @@ export const cfgCollabDisplayName = register({
 	},
 });
 
+export const cfgCollabRequireAttestation = register({
+	id: "collab.requireAttestation",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "interaction",
+		group: "Collab",
+		label: "Require Attestation",
+		description:
+			"Guests the relay did not attest (verified user + access on join) are read-only and shown as unverified-<peer>",
+	},
+});
+
 export const cfgCollabAutoStart = register({
 	id: "collab.autoStart",
 	type: "enum",
