@@ -34,9 +34,11 @@ import { cfgCollabAutoStart } from "./settings";
 /**
  * Announcement of a live room. `webLink`/`link` carry the highest access the
  * room was started with (`access`); a view room never exposes its write token.
- * `roomId`, `relayUrl`, `viewSecret` and `controlSecret` are the parts those
- * links are built from (`<relayUrl>/r/<roomId>.<secret>`), for embedders that
- * mint their own per-user URLs instead of handing this one out.
+ * `relayHost`, `roomId`, `viewSecret` and `controlSecret` are the parts those
+ * links are built from (`<relayHost>/r/<roomId>.<secret>`), as explicit fields
+ * so an embedder minting its own per-user URLs never parses a link string.
+ * No field carries a path from `collab.relayUrl` (a host token): it is the
+ * host's credential, not part of the room.
  */
 export interface CollabRoomEvent {
 	type: "collab_room";
@@ -52,6 +54,8 @@ export interface CollabRoomEvent {
 	roomId: string;
 	/** WebSocket relay origin the room lives on (`ws(s)://host[:port]`). */
 	relayUrl: string;
+	/** `host[:port]` of that relay, as it appears in guest links. */
+	relayHost: string;
 	/** base64url of the 32-byte room key: a view-only link's secret. */
 	viewSecret: string;
 	/** base64url of key ∥ write token: a control link's secret. Absent for view rooms. */
@@ -88,7 +92,8 @@ function roomEvent(host: CollabHost): CollabRoomEvent {
 		viewLink: host.viewLink,
 		generation: host.generation,
 		roomId: parsed.roomId,
-		relayUrl: parsed.wsUrl.slice(0, parsed.wsUrl.length - `/r/${parsed.roomId}`.length),
+		relayUrl: new URL(parsed.wsUrl).origin,
+		relayHost: new URL(parsed.wsUrl).host,
 		viewSecret: Buffer.from(parsed.key).toString("base64url"),
 	};
 	if (control && parsed.writeToken) {

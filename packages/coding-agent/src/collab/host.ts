@@ -38,6 +38,7 @@ import {
 	type CollabParticipant,
 	type CollabPromptDetails,
 	type CollabSessionState,
+	collabHostSocketUrl,
 	formatCollabLink,
 	formatCollabWebLink,
 	generateRoomId,
@@ -425,7 +426,9 @@ export class CollabHost {
 		const key = await importRoomKey(rawKey);
 		if (this.ending) throw new CollabHostStoppedError("collab host stopped before connecting");
 
-		const socket = new CollabSocket({ wsUrl: parsed.wsUrl, role: "host", key });
+		// Not `parsed.wsUrl`: the host keeps the relay URL's path (a host token),
+		// which the guest links above deliberately leave out.
+		const socket = new CollabSocket({ wsUrl: collabHostSocketUrl(relayUrl, roomId), role: "host", key });
 		this.#socket = socket;
 
 		let opened = false;

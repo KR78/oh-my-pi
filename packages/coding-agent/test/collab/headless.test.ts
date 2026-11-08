@@ -30,6 +30,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { type LocalRelay, startLocalRelay } from "../../../collab-web/scripts/local-relay";
+import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 interface CollabRoomLine {
 	type: "collab_room";
@@ -41,6 +42,7 @@ interface CollabRoomLine {
 	generation: number;
 	roomId: string;
 	relayUrl: string;
+	relayHost: string;
 	viewSecret: string;
 	controlSecret?: string;
 }
@@ -198,6 +200,7 @@ describe("headless collab hosting in --mode json", () => {
 		expect(room.link.startsWith(`${relay.url}/r/${room.roomId}.`)).toBe(true);
 		expect(room.viewLink.startsWith(`${relay.url}/r/${room.roomId}.`)).toBe(true);
 		expect(room.relayUrl).toBe(relay.url);
+		expect(room.relayHost).toBe(new URL(relay.url).host);
 		expect(room.link.endsWith(`.${room.controlSecret}`)).toBe(true);
 		expect(room.viewLink.endsWith(`.${room.viewSecret}`)).toBe(true);
 		const linkParsed = parseCollabLink(room.webLink);
@@ -293,5 +296,37 @@ describe("headless collab hosting in --mode json", () => {
 		expect(await runPrintMode(session, { mode: "json", initialMessage: "hello" })).toBe(0);
 		expect(roomLines()).toHaveLength(0);
 		expect(publishSpy).not.toHaveBeenCalled();
+	}, 20_000);
+
+	it("keeps a host token on the relay URL out of the event and the link file", async () => {
+		installInMemoryRelay();
+		try {
+			const token = "hosttoken_Q7-verysecret";
+			const linkFile = path.join(tmp, "collab-link.json");
+			process.env.OMP_COLLAB_LINK_FILE = linkFile;
+			const release = Promise.withResolvers<void>();
+			const { session } = await createSession(
+				{ "collab.autoStart": "control", "collab.relayUrl": `wss://relay.example:8443/h/${token}` },
+				(async function* () {
+					await release.promise;
+					yield { content: ["done"] };
+				})(),
+			);
+			const run = runPrintMode(session, { mode: "json", initialMessage: "hello" });
+			const room = await roomLineSeen.promise;
+			const fileText = await fs.readFile(linkFile, "utf8");
+			release.resolve();
+			expect(await run).toBe(0);
+
+			expect(room.relayHost).toBe("relay.example:8443");
+			expect(room.relayUrl).toBe("wss://relay.example:8443");
+			expect(room.link).toBe(`relay.example:8443/r/${room.roomId}.${room.controlSecret}`);
+			expect(room.viewLink).toBe(`relay.example:8443/r/${room.roomId}.${room.viewSecret}`);
+			expect(JSON.stringify(room)).not.toContain(token);
+			expect(fileText).not.toContain(token);
+			expect(stdoutLines.join("\n")).not.toContain(token);
+		} finally {
+			uninstallInMemoryRelay();
+		}
 	}, 20_000);
 });

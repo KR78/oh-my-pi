@@ -167,6 +167,20 @@ function normalizeRelayOrigin(relayUrl: string): { origin: string } | { error: s
 }
 
 /**
+ * WebSocket URL the HOST dials for `roomId`: the relay origin, then any path
+ * on the configured relay URL, then `/r/<roomId>`. An authenticating relay
+ * gates hosts behind a path such as `/h/<host-token>`; that token is the
+ * host's credential, so it is used here and never in the links guests get,
+ * which are built from the origin alone ({@link formatCollabLink}).
+ */
+export function collabHostSocketUrl(relayUrl: string, roomId: string): string {
+	const normalized = normalizeRelayOrigin(relayUrl);
+	if ("error" in normalized) throw new Error(normalized.error);
+	const prefix = new URL(relayUrl).pathname.replace(/\/+$/, "");
+	return `${normalized.origin}${prefix}/r/${roomId}`;
+}
+
+/**
  * Render the shareable link. Compact forms: the default relay collapses to
  * `<roomId>.<key>`, other wss relays drop the scheme (`host[:port]/r/…`);
  * only localhost ws:// links keep their full URL so parsing cannot

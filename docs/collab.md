@@ -73,7 +73,7 @@ When the relay opens a room, the run reports it once:
 - `-p` text mode prints nothing extra: its stdout is the answer.
 - If `OMP_COLLAB_LINK_FILE` is set, the same object is written to that path (mode `0600`, atomically), rewritten when the room rotates, and deleted when it stops.
 
-`webLink`/`link` carry `access`; a `view` room never exposes `controlSecret`. Every link is `<relayUrl>/r/<roomId>.<secret>` (web links wrap it in `<web>/#…`), with `viewSecret` = base64url(room key) and `controlSecret` = base64url(room key ∥ write token), so an embedder can mint its own URLs from the parts. The link is written only to those two places, never to stderr or the log. When the run ends (JSON run finished, RPC stdin EOF, or a signal), guests get a goodbye and the link file is removed before the process exits.
+`webLink`/`link` carry `access`; a `view` room never exposes `controlSecret`. Every link is `<relayHost>/r/<roomId>.<secret>` (web links wrap it in `<web>/#…`), with `viewSecret` = base64url(room key) and `controlSecret` = base64url(room key ∥ write token). These parts are explicit fields so an embedder can mint its own URLs (for example `https://<relayHost>/j/<ticket>#<relayHost>/r/<roomId>.<secret>`) without parsing a link. The link is written only to those two places, never to stderr or the log. When the run ends (JSON run finished, RPC stdin EOF, or a signal), guests get a goodbye and the link file is removed before the process exits.
 
 ### Listing active local hosts
 
@@ -174,6 +174,10 @@ When a guest joins during an assistant turn, that in-flight turn appears on the 
 ## Web client
 
 `packages/collab-web` is a standalone browser client for the same links — no omp install needed on the guest side. The relay serves it at `/`, which is what makes the `/collab` deep link click-to-join: `https://<relay>/#<link>` loads the client and auto-connects from the fragment. It renders the live transcript (streaming text, thinking, tool cards), a subagent panel with on-demand transcripts, and a composer with the same guest powers (prompt, interrupt, hub actions). Run `bun run dev` in the package for a local instance, `bun run mock-host` for an offline scripted host to develop against, and `bun run build` to emit a static `dist/` deployable anywhere (HTTPS required for WebCrypto). The client never talks to anything but the relay, and the key stays in the URL fragment.
+
+A path on `collab.relayUrl` is kept for the host's own connection only: with `wss://relay.example/h/<token>` the host dials `wss://relay.example/h/<token>/r/<roomId>`, while every guest link, `collab_room` event and link file still says `relay.example/r/<roomId>.<key>`. This is how a host presents a relay's host token without handing it to guests.
+
+A relay may refuse a guest with close code `4003`; the guest stops (no reconnect loop) and shows the relay's reason, or "refused by the relay" if it sent none.
 
 Set `collab.webUrl` when the browser UI is hosted separately from the websocket relay. When empty, `/collab` derives `http(s)://host[:port]` from `collab.relayUrl`; explicit web UI URLs must use `https://` except for localhost/loopback `http://` development origins, and cannot contain a query string or fragment. The generated browser URL still carries the relay-specific collab link in the fragment.
 
