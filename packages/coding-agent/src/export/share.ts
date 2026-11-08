@@ -138,6 +138,7 @@ function collectShareRegexSecretValues(o: SecretObfuscator, data: SessionData): 
 	const addOutputMeta = (meta: OutputMeta | undefined): void => {
 		if (!meta) return;
 		add(meta.source?.value);
+		add(meta.minimized?.filter);
 		if (!meta.diagnostics) return;
 		add(meta.diagnostics.summary);
 		for (const message of meta.diagnostics.messages) add(message);
@@ -207,7 +208,7 @@ function collectShareRegexSecretValues(o: SecretObfuscator, data: SessionData): 
 				addContent(entry.content);
 				return;
 			case "session_init":
-				add(entry.systemPrompt);
+				for (const block of [entry.systemPrompt].flat()) add(block);
 				add(entry.task);
 				return;
 			case "label":
@@ -327,9 +328,14 @@ function redactShareEntry(
 		case "session_init":
 			return {
 				...entry,
-				systemPrompt: o.obfuscate(entry.systemPrompt, sharedRegexSecretValues),
+				systemPrompt:
+					typeof entry.systemPrompt === "string"
+						? o.obfuscate(entry.systemPrompt, sharedRegexSecretValues)
+						: entry.systemPrompt.map(block => o.obfuscate(block, sharedRegexSecretValues)),
 				task: o.obfuscate(entry.task, sharedRegexSecretValues),
 				outputSchema: undefined,
+				// Revival-only state; its item ids can carry user text.
+				workPoolYieldItems: undefined,
 			};
 		case "label":
 			return {
@@ -362,7 +368,7 @@ function redactShareContent(
 	);
 }
 
-/** Redact freeform strings in tool output metadata (source path/URL, diagnostics); numeric truncation info is preserved. */
+/** Redact freeform strings in tool output metadata (source path/URL, diagnostics, minimizer filter); numeric truncation info is preserved. */
 function redactShareOutputMeta(
 	o: SecretObfuscator,
 	meta: OutputMeta | undefined,
@@ -380,6 +386,9 @@ function redactShareOutputMeta(
 					messages: meta.diagnostics.messages.map(message => o.obfuscate(message, sharedRegexSecretValues)),
 				}
 			: meta.diagnostics,
+		minimized: meta.minimized
+			? { ...meta.minimized, filter: o.obfuscate(meta.minimized.filter, sharedRegexSecretValues) }
+			: meta.minimized,
 	};
 }
 

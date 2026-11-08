@@ -27,7 +27,10 @@ static SPELLING_THREAD: LazyLock<flume::Sender<Job>> = LazyLock::new(|| {
 		.name("pi-native-spelling".into())
 		.spawn(move || {
 			while let Ok(job) = receiver.recv() {
-				job();
+				// A spawned thread has no autorelease pool: without one per job,
+				// every autoreleased AppKit/XPC object a spelling call
+				// creates lives until exit.
+				objc2::rc::autoreleasepool(|_| job());
 			}
 		})
 		.expect("failed to spawn the native spelling thread");
@@ -142,9 +145,7 @@ pub fn check(text: &str) -> anyhow::Result<Vec<SpellingRange>> {
 }
 
 fn strings(values: Option<Retained<NSArray<NSString>>>) -> Vec<String> {
-	values
-		.map(|values| values.iter().map(|value| value.to_string()).collect())
-		.unwrap_or_default()
+	values.map_or_default(|values| values.iter().map(|value| value.to_string()).collect())
 }
 
 /// Language macOS identifies for a word range, honoring automatic language
