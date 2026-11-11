@@ -120,7 +120,7 @@ const PSEUDO_PATH = /^[a-z][a-z0-9+.-]*:\/\//i;
  * and the model passes others relative (`README.md`), and both are the same
  * file. Tool pseudo-paths (`proc://bg_1`, `artifact://…`) are not files.
  */
-function fileKey(path: string): string | null {
+export function fileKey(path: string): string | null {
 	if (PSEUDO_PATH.test(path)) return null;
 	return path.replace(WORKSPACE_PREFIX, "").replace(/^\.\//, "");
 }
