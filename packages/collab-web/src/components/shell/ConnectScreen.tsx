@@ -1,7 +1,7 @@
 import { ArrowRight, Lock } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useState } from "react";
-import { OmpMark } from "./OmpMark";
+import { BrandMark, useBrandName } from "../../directions/kit/brand";
 import { ThemeToggle } from "./ThemeToggle";
 
 export interface ConnectScreenProps {
@@ -27,24 +27,24 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 	};
 
 	const shown = localError ?? error;
+	const brand = useBrandName();
 
 	return (
 		<div className="sh-connect">
 			<div className="sh-ambient" />
 			<div className="sh-connect-top">
 				<div className="sh-brand">
-					<OmpMark />
-					<span>omp</span>
-					<span className="sh-brand-slash">/</span>
-					<span className="sh-brand-app">collab</span>
+					<BrandMark size={22} className="sh-mark" />
+					<span>{brand}</span>
 				</div>
 				<ThemeToggle />
 			</div>
 			<form className="sh-connect-card" onSubmit={submit}>
 				<div className="sh-connect-head">
-					<h1 className="sh-connect-title">Join a live session</h1>
+					<h1 className="sh-connect-title">Watch {brand} work</h1>
 					<p className="sh-connect-sub">
-						Watch an omp agent work in real time — transcript, tool calls and subagents — and prompt it from here.
+						Follow a run as it happens: what {brand} reads, runs and changes. With a steer link you can tell it
+						something too.
 					</p>
 				</div>
 				<label className="sh-field">
@@ -54,13 +54,13 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 						type="text"
 						value={link}
 						onChange={e => setLink(e.target.value)}
-						placeholder="ws://host:port/r/room.key"
+						placeholder="Paste the link from Slack"
 						spellCheck={false}
 						autoComplete="off"
 						autoFocus
 					/>
 					<span className="sh-field-hint">
-						Run <code>/collab</code> in any omp session to get one.
+						The "Watch or steer live" button in Slack opens this page with the link filled in.
 					</span>
 				</label>
 				<label className="sh-field">
@@ -78,11 +78,11 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 				</label>
 				{shown && <div className="sh-connect-error">{shown}</div>}
 				<button className="sh-btn sh-btn-primary sh-connect-submit" type="submit">
-					Connect <ArrowRight size={14} />
+					Join the run <ArrowRight size={14} />
 				</button>
 				<div className="sh-connect-foot">
 					<Lock size={12} />
-					End-to-end encrypted. The room key stays in the link and never reaches the relay.
+					Encrypted end to end. The key stays in your link and never reaches the server.
 				</div>
 			</form>
 		</div>

@@ -1,0 +1,369 @@
+/* Shared content views (k-*). No colours here: every value is a --k-* token a
+ * direction maps onto its own palette in its tokens, so the views take on each
+ * direction's look and a customer's overrides. */
+
+.dx-root {
+	height: var(--viewport-height, 100dvh);
+	overflow: hidden;
+	background: var(--surface);
+	color: var(--ink);
+	font-family: var(--font-ui);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+.dx-root :focus-visible {
+	outline: 2px solid var(--k-ring);
+	outline-offset: 2px;
+}
+
+.dx-root ::selection {
+	background: var(--k-selection);
+}
+
+.k-sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+/* ---- prose ---- */
+
+.kmd {
+	overflow-wrap: break-word;
+	line-height: var(--k-prose-leading, 1.6);
+}
+
+.kmd > :first-child {
+	margin-top: 0;
+}
+
+.kmd > :last-child {
+	margin-bottom: 0;
+}
+
+.kmd p,
+.kmd li {
+	white-space: pre-wrap;
+}
+
+.kmd p {
+	margin: 0 0 0.75em;
+}
+
+.kmd h1,
+.kmd h2,
+.kmd h3,
+.kmd h4 {
+	margin: 1.2em 0 0.5em;
+	font-family: var(--k-heading-font, inherit);
+	font-weight: var(--k-heading-weight, 650);
+	line-height: 1.3;
+	letter-spacing: -0.01em;
+}
+
+.kmd h1 {
+	font-size: 1.3em;
+}
+
+.kmd h2 {
+	font-size: 1.15em;
+}
+
+.kmd h3,
+.kmd h4 {
+	font-size: 1em;
+}
+
+.kmd ul,
+.kmd ol {
+	margin: 0 0 0.75em;
+	padding-left: 1.4em;
+}
+
+.kmd li {
+	margin: 0.2em 0;
+}
+
+.kmd li::marker {
+	color: var(--k-marker);
+}
+
+.kmd li > ul,
+.kmd li > ol {
+	white-space: normal;
+	margin-bottom: 0;
+}
+
+.kmd code {
+	padding: 0.1em 0.35em;
+	border-radius: 4px;
+	background: var(--k-code-bg);
+	color: var(--k-code-ink);
+	font-family: var(--k-mono);
+	font-size: 0.86em;
+	overflow-wrap: anywhere;
+}
+
+.kmd pre {
+	margin: 0 0 0.75em;
+	padding: 12px 14px;
+	overflow-x: auto;
+	border: 1px solid var(--k-line);
+	border-radius: var(--k-radius);
+	background: var(--k-inset);
+	line-height: 1.5;
+}
+
+.kmd pre code {
+	padding: 0;
+	background: none;
+	color: var(--ink);
+	font-size: 12.5px;
+	overflow-wrap: normal;
+}
+
+.kmd blockquote {
+	margin: 0 0 0.75em;
+	padding: 0 0 0 12px;
+	border-left: 1px solid var(--k-line-strong);
+	color: var(--k-muted);
+}
+
+.kmd table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
+	margin: 0 0 0.75em;
+	border-collapse: collapse;
+	font-size: 0.92em;
+	font-variant-numeric: tabular-nums;
+}
+
+.kmd th,
+.kmd td {
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--k-line);
+	text-align: left;
+}
+
+.kmd th {
+	font-weight: 600;
+	border-bottom-color: var(--k-line-strong);
+}
+
+.kmd a {
+	color: var(--k-link);
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 2px;
+}
+
+.kmd hr {
+	margin: 1em 0;
+	border: 0;
+	border-top: 1px solid var(--k-line);
+}
+
+.kmd math {
+	white-space: normal;
+}
+
+.kmd .tr-math {
+	display: block;
+	margin: 4px 0;
+	padding-block: 0.5em;
+	overflow-x: auto;
+}
+
+.kmd img {
+	max-width: 100%;
+}
+
+/* ---- code, output, diff ---- */
+
+.k-code,
+.k-out,
+.k-diff {
+	min-width: 0;
+	border: 1px solid var(--k-line);
+	border-radius: var(--k-radius);
+	background: var(--k-inset);
+	overflow: hidden;
+}
+
+.k-pre {
+	margin: 0;
+	padding: 8px 0;
+	overflow: auto;
+	max-height: var(--k-pre-max, 440px);
+	font: 12px / 1.6 var(--k-mono);
+	color: var(--ink);
+	tab-size: 4;
+}
+
+.k-out .k-pre {
+	padding: 8px 12px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.k-out--err {
+	border-color: var(--k-err-line);
+}
+
+.k-out--err .k-pre {
+	color: var(--k-err-ink);
+}
+
+.k-line,
+.k-dr {
+	display: flex;
+	min-width: max-content;
+	padding-right: 12px;
+}
+
+.k-ln {
+	flex: none;
+	width: 4.5ch;
+	padding-right: 1.5ch;
+	text-align: right;
+	color: var(--k-faint);
+	user-select: none;
+	font-variant-numeric: tabular-nums;
+}
+
+.k-lt {
+	white-space: pre;
+}
+
+.k-sign {
+	flex: none;
+	width: 2ch;
+	color: var(--k-faint);
+	user-select: none;
+}
+
+.k-dr--add {
+	background: var(--k-add-bg);
+}
+
+.k-dr--add .k-sign,
+.k-add {
+	color: var(--k-add-ink);
+}
+
+.k-dr--del {
+	background: var(--k-del-bg);
+}
+
+.k-dr--del .k-sign,
+.k-del {
+	color: var(--k-del-ink);
+}
+
+.k-dr--hunk {
+	padding: 2px 0 2px 6ch;
+	color: var(--k-faint);
+	background: var(--k-hunk-bg);
+}
+
+.k-hunk {
+	font-style: italic;
+}
+
+.k-counts {
+	display: inline-flex;
+	gap: 6px;
+	font: 500 12px var(--k-mono);
+	font-variant-numeric: tabular-nums;
+}
+
+.k-cmd {
+	margin: 0;
+	padding: 8px 12px;
+	border: 1px solid var(--k-line);
+	border-radius: var(--k-radius);
+	background: var(--k-inset);
+	font: 12px / 1.55 var(--k-mono);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--ink);
+}
+
+.k-prompt {
+	color: var(--k-faint);
+	user-select: none;
+}
+
+.k-detail {
+	display: grid;
+	gap: 8px;
+	min-width: 0;
+}
+
+.k-elided {
+	padding: 6px 12px 0;
+	font-size: 11.5px;
+	color: var(--k-faint);
+}
+
+.k-empty {
+	padding: 8px 12px;
+	border: 1px dashed var(--k-line);
+	border-radius: var(--k-radius);
+	font-size: 12.5px;
+	color: var(--k-faint);
+}
+
+.k-more {
+	display: block;
+	width: 100%;
+	min-height: 32px;
+	padding: 6px 12px;
+	border: 0;
+	border-top: 1px solid var(--k-line);
+	background: transparent;
+	color: var(--k-muted);
+	font: inherit;
+	font-size: 12px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.k-more:hover {
+	color: var(--ink);
+	background: var(--k-hover);
+}
+
+/* syntax tints */
+.hl-c {
+	color: var(--k-syn-comment);
+	font-style: italic;
+}
+
+.hl-s {
+	color: var(--k-syn-string);
+}
+
+.hl-n {
+	color: var(--k-syn-number);
+}
+
+.hl-k {
+	color: var(--k-syn-keyword);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.dx-root *,
+	.dx-root *::before,
+	.dx-root *::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}

@@ -1,19 +1,15 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AgentDrawer } from "./components/agents/AgentDrawer";
-import { AgentsPanel } from "./components/agents/AgentsPanel";
-import { Banners } from "./components/shell/Banners";
-import { Composer } from "./components/shell/Composer";
 import { ConnectScreen } from "./components/shell/ConnectScreen";
-import { HeaderBar } from "./components/shell/HeaderBar";
-import { Toasts } from "./components/shell/Toasts";
-import { Transcript } from "./components/transcript/Transcript";
-import { GuestClient } from "./lib/client";
+import { DirectionHost } from "./directions/host";
+import { BrandContext } from "./directions/kit/brand";
+import { sessionTitle } from "./directions/kit/session";
+import { readSelection, type Selection } from "./directions/selection";
+import { safeBrandName } from "./directions/theme-seam";
+import { GuestClient, type GuestSnapshot } from "./lib/client";
 import { useGuestSnapshot } from "./lib/use-guest";
-import type { ToolRenderHost } from "./tool-render";
-import "./components/shell/shell.css";
 
-const NAME_KEY = "omp.collab.name";
+const NAME_KEY = "oz.live.name";
 
 interface Creds {
 	link: string;
@@ -40,6 +36,9 @@ export function App(): ReactNode {
 	const [client, setClient] = useState<GuestClient | null>(null);
 	const [connectError, setConnectError] = useState<string | null>(null);
 	const credsRef = useRef<Creds | null>(null);
+	// The query string only: the fragment carries the room key and is read by hashLink() alone.
+	const selection = useMemo(() => readSelection(window.location.search), []);
+	const brand = safeBrandName(selection.theme);
 
 	const connect = useCallback((link: string, name: string): void => {
 		let next: GuestClient;
@@ -104,130 +103,85 @@ export function App(): ReactNode {
 	}, [connect]);
 
 	useEffect(() => {
-		if (!client) document.title = "omp collab";
-	}, [client]);
+		if (!client) document.title = `${brand} · live run`;
+	}, [client, brand]);
 
 	if (!client) {
-		return <ConnectScreen defaultName={storedName()} error={connectError} onConnect={connect} />;
+		return (
+			<BrandContext.Provider value={selection.theme}>
+				<ConnectScreen defaultName={storedName()} error={connectError} onConnect={connect} />
+			</BrandContext.Provider>
+		);
 	}
-	return <Session client={client} onLeave={leave} onRejoin={rejoin} />;
+	return <Session client={client} selection={selection} onLeave={leave} onRejoin={rejoin} />;
 }
 
 interface SessionProps {
 	client: GuestClient;
+	selection: Selection;
 	onLeave(): void;
 	onRejoin(): void;
 }
 
-function Session({ client, onLeave, onRejoin }: SessionProps): ReactNode {
-	const snap = useGuestSnapshot(client);
-	const [railOpen, setRailOpen] = useState(false);
-	const [selectedId, setSelectedId] = useState<string | null>(null);
-	const autoOpenedRef = useRef(false);
+/**
+ * Gallery preview of a phase the mock host cannot hold still. Overrides only
+ * the copy of the snapshot handed to the direction; the client keeps its
+ * real state, and the production selection never sets a preview.
+ */
+function previewSnapshot(snap: GuestSnapshot, preview: Selection["preview"]): GuestSnapshot {
+	if (preview === null) return snap;
+	switch (preview) {
+		case "connecting":
+			return {
+				...snap,
+				phase: "connecting",
+				entries: [],
+				stream: null,
+				working: false,
+				header: null,
+				state: null,
+				agents: [],
+			};
+		case "waiting":
+			return {
+				...snap,
+				phase: "waiting",
+				entries: [],
+				stream: null,
+				working: false,
+				loading: { received: 38, total: 86 },
+			};
+		case "reconnecting":
+			return { ...snap, phase: "reconnecting" };
+		case "ended":
+			return {
+				...snap,
+				phase: "ended",
+				endedReason: snap.endedReason ?? "the run finished",
+				working: false,
+				uiRequest: null,
+			};
+	}
+}
 
-	const subCount = useMemo(() => snap.agents.filter(a => a.kind === "sub").length, [snap.agents]);
-
-	// Task-card agent chips drill into the same drawer the rail uses.
-	const agentIds = useMemo(() => new Set(snap.agents.map(a => a.id)), [snap.agents]);
-	const toolHost = useMemo<ToolRenderHost>(
-		() => ({
-			hasAgent: id => agentIds.has(id),
-			openAgent: id => {
-				if (agentIds.has(id)) setSelectedId(id);
-			},
-		}),
-		[agentIds],
-	);
-
-	// Auto-open the rail the first time a subagent appears.
+function Session({ client, selection, onLeave, onRejoin }: SessionProps): ReactNode {
+	const live = useGuestSnapshot(client);
+	const snap = useMemo(() => previewSnapshot(live, selection.preview), [live, selection.preview]);
+	const brand = safeBrandName(selection.theme);
+	const title = sessionTitle(snap);
 	useEffect(() => {
-		if (subCount > 0 && !autoOpenedRef.current) {
-			autoOpenedRef.current = true;
-			setRailOpen(true);
-		}
-	}, [subCount]);
-
-	const title = snap.header?.title ?? snap.state?.sessionName ?? "session";
-	useEffect(() => {
-		document.title = `${title} · omp collab`;
-	}, [title]);
-
-	const drawerAgent = selectedId != null ? snap.agents.find(a => a.id === selectedId) : undefined;
-	const toggleRail = useCallback(() => setRailOpen(open => !open), []);
-	const closeDrawer = useCallback(() => setSelectedId(null), []);
+		document.title = `${title} · ${brand}`;
+	}, [title, brand]);
 
 	return (
-		<div className="sh-app">
-			<div className="sh-ambient" />
-			<HeaderBar
-				header={snap.header}
-				state={snap.state}
-				phase={snap.phase}
-				readOnly={snap.readOnly}
-				subCount={subCount}
-				railOpen={railOpen}
-				onToggleRail={toggleRail}
-				onLeave={onLeave}
-			/>
-			<main className="sh-main">
-				<section className="sh-panel" data-rail={railOpen ? "true" : "false"}>
-					<div className="sh-transcript">
-						<Transcript
-							entries={snap.entries}
-							stream={snap.stream}
-							streamDone={snap.streamDone}
-							activeTools={snap.activeTools}
-							working={snap.working}
-							host={toolHost}
-							phase={snap.phase}
-						/>
-					</div>
-					<Composer
-						client={client}
-						phase={snap.phase}
-						readOnly={snap.readOnly}
-						uiRequest={snap.uiRequest}
-						working={snap.working}
-						queuedMessageCount={snap.state?.queuedMessageCount ?? 0}
-					/>
-				</section>
-				{railOpen && (
-					<>
-						<div className="sh-rail-backdrop" onClick={() => setRailOpen(false)} />
-						<aside className="sh-rail">
-							<AgentsPanel
-								agents={snap.agents}
-								progress={snap.progress}
-								lifecycle={snap.lifecycle}
-								selectedId={selectedId}
-								onSelect={setSelectedId}
-							/>
-						</aside>
-					</>
-				)}
-			</main>
-			{drawerAgent && (
-				<>
-					<div className="ag-drawer-backdrop" onClick={closeDrawer} />
-					<AgentDrawer
-						agent={drawerAgent}
-						progress={snap.progress.get(drawerAgent.id)}
-						lifecycle={snap.lifecycle.get(drawerAgent.id)}
-						client={client}
-						readOnly={snap.readOnly}
-						host={toolHost}
-						onClose={closeDrawer}
-					/>
-				</>
-			)}
-			<Banners
-				phase={snap.phase}
-				endedReason={snap.endedReason}
-				loading={snap.loading}
-				onRejoin={onRejoin}
-				onNewLink={onLeave}
-			/>
-			<Toasts notices={snap.notices} />
-		</div>
+		<DirectionHost
+			direction={selection.direction}
+			client={client}
+			snapshot={snap}
+			theme={selection.theme}
+			forcedMode={selection.mode}
+			onRejoin={onRejoin}
+			onLeave={onLeave}
+		/>
 	);
 }

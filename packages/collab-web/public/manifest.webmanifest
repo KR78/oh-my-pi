@@ -1,16 +1,16 @@
 {
-	"name": "omp collab",
-	"short_name": "omp collab",
-	"description": "Live guest client for omp collab sessions: streaming transcript, tool cards, subagent panel, and a composer that prompts the host agent — end-to-end encrypted.",
+	"name": "Oz live run",
+	"short_name": "Oz",
+	"description": "Watch an Oz coding run as it happens, and steer it if your link allows.",
 	"start_url": "/",
 	"scope": "/",
 	"display": "standalone",
-	"background_color": "#000000",
-	"theme_color": "#000000",
+	"background_color": "#141210",
+	"theme_color": "#141210",
 	"icons": [
-		{ "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
-		{ "src": "/favicon-192x192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
-		{ "src": "/favicon-512x512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
-		{ "src": "/favicon-180x180.png", "type": "image/png", "sizes": "180x180", "purpose": "any" }
+		{ "src": "./favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+		{ "src": "./favicon-192x192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+		{ "src": "./favicon-512x512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+		{ "src": "./favicon-180x180.png", "type": "image/png", "sizes": "180x180", "purpose": "any" }
 	]
 }

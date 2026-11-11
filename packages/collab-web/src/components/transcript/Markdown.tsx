@@ -86,9 +86,15 @@ function renderMarkdown(text: string): string {
 	}
 }
 
-export const Markdown = memo(function Markdown({ text }: { text: string }): ReactNode {
+export const Markdown = memo(function Markdown({
+	text,
+	className = "tr-md",
+}: {
+	text: string;
+	className?: string;
+}): ReactNode {
 	const html = useMemo(() => renderMarkdown(text), [text]);
-	return <div className="tr-md" dangerouslySetInnerHTML={{ __html: html }} />;
+	return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 });
 
 /**
@@ -193,12 +199,18 @@ export function renderStreamingMarkdown(
  * tail instead of the whole growing block. Output is identical to
  * {@link Markdown} for the same text.
  */
-export const StreamingMarkdown = memo(function StreamingMarkdown({ text }: { text: string }): ReactNode {
+export const StreamingMarkdown = memo(function StreamingMarkdown({
+	text,
+	className = "tr-md",
+}: {
+	text: string;
+	className?: string;
+}): ReactNode {
 	const prefixRef = useRef(NO_PREFIX);
 	const html = useMemo(() => {
 		const rendered = renderStreamingMarkdown(text, prefixRef.current);
 		prefixRef.current = rendered.prefix;
 		return rendered.html;
 	}, [text]);
-	return <div className="tr-md" dangerouslySetInnerHTML={{ __html: html }} />;
+	return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 });
