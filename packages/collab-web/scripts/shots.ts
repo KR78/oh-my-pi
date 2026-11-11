@@ -67,7 +67,17 @@ async function typeIntoComposer(page: Page, text: string): Promise<void> {
 
 async function runHook(page: Page, hook: string): Promise<void> {
 	await page.evaluate(h => {
-		for (const el of document.querySelectorAll<HTMLElement>(`[data-shot='${h}']`)) el.click();
+		const els = [...document.querySelectorAll<HTMLElement>(`[data-shot='${h}']`)];
+		const el = els[els.length - 1];
+		if (!el) return;
+		el.click();
+		// Bring what opened to the top of its own scroll area (never scroll the page itself).
+		requestAnimationFrame(() => {
+			let box: HTMLElement | null = el.parentElement;
+			while (box && !(box.scrollHeight > box.clientHeight && /auto|scroll/.test(getComputedStyle(box).overflowY)))
+				box = box.parentElement;
+			if (box) box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 8;
+		});
 	}, hook);
 }
 
@@ -78,7 +88,12 @@ const MOMENTS: Moment[] = [
 		access: "full",
 		settle: 300,
 		async act(page) {
-			// Replays the held-back Oz turn; the shot lands mid-stream with a tool running.
+			// A fresh session, then the held-back Oz turn replays; the shot lands mid-stream with a tool running.
+			await typeIntoComposer(page, "/reset");
+			await sleep(400);
+			await page.reload({ waitUntil: "domcontentloaded" });
+			await page.waitForSelector("[data-shot='ready']", { timeout: 15000 }).catch(() => undefined);
+			await sleep(900);
 			await typeIntoComposer(page, "Please also add a short Development note about npm run check.");
 			await page.waitForSelector("[data-shot='running']", { timeout: 15000 }).catch(() => undefined);
 			await sleep(250);

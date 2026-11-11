@@ -22,8 +22,9 @@
  * carries the bare key so the host marks that guest read-only.
  *
  * Guest prompts that start with a slash drive states a real run reaches on
- * its own: `/ask` (a select question), `/ask text` (a free-text question) and
- * `/end` (this guest receives `bye`, as when the run finishes).
+ * its own: `/ask` (a select question), `/ask text` (a free-text question),
+ * `/end` (this guest receives `bye`, as when the run finishes) and `/reset`
+ * (back to the loaded session; reload to see it).
  */
 
 import type { AgentSnapshot, HostFrame, SessionEntry, SessionState, WireFrame } from "@oh-my-pi/pi-wire";
@@ -106,8 +107,12 @@ const viewLink = formatCollabLink(relay.url, roomId, rawKey);
 
 // ── mutable session state ────────────────────────────────────────────────────
 
-const entries: SessionEntry[] = [...(scenario?.entries ?? fixtureEntries)];
-if (stress) entries.push(...stressEntries(entries[entries.length - 1]?.id ?? null));
+function initialEntries(): SessionEntry[] {
+	const list = [...(scenario?.entries ?? fixtureEntries)];
+	if (stress) list.push(...stressEntries(list[list.length - 1]?.id ?? null));
+	return list;
+}
+const entries: SessionEntry[] = initialEntries();
 const agents: AgentSnapshot[] = scenario
 	? [
 			{
@@ -316,6 +321,16 @@ function handlePrompt(text: string, fromPeer: number): void {
 	const command = text.trim();
 	if (command === "/ask") return askQuestion(ASK_SELECT);
 	if (command === "/ask text") return askQuestion(ASK_TEXT);
+	if (command === "/reset") {
+		// Dev only: back to the loaded session, so repeated screenshot runs start alike. Guests reload to see it.
+		cancelReplay();
+		queuedPrompts = 0;
+		streaming = false;
+		entries.splice(0, entries.length, ...initialEntries());
+		lastEntryId = entries[entries.length - 1]?.id ?? null;
+		broadcastState();
+		return;
+	}
 	if (command === "/end") {
 		sendFrame({ t: "bye", reason: "the run finished" }, fromPeer);
 		return;

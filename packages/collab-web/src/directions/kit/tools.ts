@@ -248,6 +248,38 @@ export function plainStep(call: ToolCallView): string {
 	}
 }
 
+/** One call block joined with its result and live execution. */
+export function toolCallView(
+	block: { id: string; name: string; arguments: Record<string, unknown>; intent?: string },
+	result: ToolResultMessage | undefined,
+	active: ActiveTool | undefined,
+	pending: boolean,
+	at: number,
+): ToolCallView {
+	const { args, intent } = cleanArgs(active?.args ?? block.arguments);
+	return {
+		id: block.id,
+		name: block.name,
+		kind: toolKind(block.name),
+		args,
+		intent: block.intent?.trim() || active?.intent?.trim() || intent,
+		status: result ? (result.isError ? "failed" : "done") : active || pending ? "running" : "done",
+		result: result ?? null,
+		partial: active ? partialText(active.partialResult) : null,
+		at,
+	};
+}
+
+/** Tool results by call id, for pairing. */
+export function resultsById(entries: readonly SessionEntry[]): Map<string, ToolResultMessage> {
+	const results = new Map<string, ToolResultMessage>();
+	for (const entry of entries) {
+		if (entry.type === "message" && entry.message.role === "toolResult")
+			results.set(entry.message.toolCallId, entry.message);
+	}
+	return results;
+}
+
 /**
  * Every tool call in the transcript (plus the live stream and tools running
  * outside any message), joined with its result, in order.
@@ -290,18 +322,18 @@ export function collectToolCalls(
 	if (stream) push(stream, true);
 	for (const tool of activeTools.values()) {
 		if (seen.has(tool.toolCallId)) continue;
-		const { args, intent } = cleanArgs(tool.args);
-		calls.push({
-			id: tool.toolCallId,
-			name: tool.toolName,
-			kind: toolKind(tool.toolName),
-			args,
-			intent: tool.intent?.trim() || intent,
-			status: "running",
-			result: null,
-			partial: partialText(tool.partialResult),
-			at: tool.startedAt,
-		});
+		calls.push(orphanToolView(tool));
 	}
 	return calls;
+}
+
+/** A running tool that no message has claimed yet. */
+export function orphanToolView(tool: ActiveTool): ToolCallView {
+	return toolCallView(
+		{ id: tool.toolCallId, name: tool.toolName, arguments: {}, intent: tool.intent },
+		undefined,
+		tool,
+		true,
+		tool.startedAt,
+	);
 }
