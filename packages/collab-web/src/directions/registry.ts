@@ -7,8 +7,9 @@
 import { chamber } from "./chamber";
 import { classic } from "./classic";
 import { claude } from "./claude";
+import { consoleDirection } from "./console";
 import type { Direction } from "./types";
 
-export const DIRECTIONS: readonly Direction[] = [classic, chamber, claude];
+export const DIRECTIONS: readonly Direction[] = [classic, chamber, claude, consoleDirection];
 
 export const DEFAULT_DIRECTION = classic;

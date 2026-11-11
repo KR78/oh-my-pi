@@ -112,11 +112,25 @@ export interface TouchedFile {
 
 const CHANGE_RANK: Record<TouchedFile["change"], number> = { read: 0, written: 1, edited: 2 };
 
+const WORKSPACE_PREFIX = /^\/(?:work|workspace|repo)\/[^/]+\//;
+const PSEUDO_PATH = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * One key per file: the host reports some paths absolute (`/work/oz/README.md`)
+ * and the model passes others relative (`README.md`), and both are the same
+ * file. Tool pseudo-paths (`proc://bg_1`, `artifact://…`) are not files.
+ */
+function fileKey(path: string): string | null {
+	if (PSEUDO_PATH.test(path)) return null;
+	return path.replace(WORKSPACE_PREFIX, "").replace(/^\.\//, "");
+}
+
 export function touchedFiles(calls: readonly ToolCallView[]): TouchedFile[] {
 	const byPath = new Map<string, TouchedFile>();
 	for (const call of calls) {
 		if (call.kind !== "read" && call.kind !== "edit" && call.kind !== "write") continue;
-		const path = toolPath(call);
+		const raw = toolPath(call);
+		const path = raw ? fileKey(raw) : null;
 		if (!path) continue;
 		const change: TouchedFile["change"] =
 			call.kind === "edit" ? "edited" : call.kind === "write" ? "written" : "read";
