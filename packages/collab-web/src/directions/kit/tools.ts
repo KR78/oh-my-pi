@@ -218,16 +218,22 @@ export function plainStep(call: ToolCallView): string {
 				if (call.status === "running") return "Running the checks";
 				return counts.length > 0 ? `Ran the checks: ${counts.slice(0, 2).join(", ")}` : "Ran the checks";
 			}
-			if (/^\s*git\s+(commit|revert)/.test(command) || /&&\s*git commit/.test(command)) return "Saved a commit";
-			if (/^\s*git\s+(log|show|status|diff|ls-tree|ls-remote|fetch)/.test(command)) return "Looked at the history";
-			if (/\bnpm (ci|install)\b/.test(command)) return "Installed dependencies";
-			return call.status === "running" ? "Running a command" : "Ran a command";
+			const now = call.status === "running";
+			if (/^\s*git\s+(commit|revert)/.test(command) || /&&\s*git commit/.test(command))
+				return now ? "Saving a commit" : "Saved a commit";
+			if (/^\s*git\s+(log|show|status|diff|ls-tree|ls-remote|fetch)/.test(command))
+				return now ? "Looking at the history" : "Looked at the history";
+			if (/\bnpm (ci|install)\b/.test(command)) return now ? "Installing dependencies" : "Installed dependencies";
+			return now ? "Running a command" : "Ran a command";
 		}
 		case "read":
+			if (call.status === "running") return file ? `Reading ${file}` : "Reading a file";
 			return file ? `Read ${file}` : "Read a file";
 		case "edit":
+			if (call.status === "running") return file ? `Changing ${file}` : "Changing a file";
 			return file ? `Changed ${file}` : "Changed a file";
 		case "write":
+			if (call.status === "running") return file ? `Writing ${file}` : "Writing a file";
 			return file ? `Wrote ${file}` : "Wrote a file";
 		case "search":
 			return "Searched the code";
