@@ -67,7 +67,7 @@ function Gallery(): ReactNode {
 		<div className="gl-app" data-mode={mode}>
 			<header className="gl-head">
 				<div>
-					<h1 className="gl-title">The live run page, six ways</h1>
+					<h1 className="gl-title">The live run page, seven ways</h1>
 					<p className="gl-sub">
 						Each card is the real page, joined to the mock host. Open one to use it; type <code>/ask</code>,{" "}
 						<code>/ask text</code> or <code>/end</code> in a steer composer to see a question or the ended state.
