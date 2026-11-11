@@ -9,9 +9,10 @@ import { classic } from "./classic";
 import { claude } from "./claude";
 import { consoleDirection } from "./console";
 import { feed } from "./feed";
+import { slack } from "./slack";
 import { studio } from "./studio";
 import type { Direction } from "./types";
 
-export const DIRECTIONS: readonly Direction[] = [classic, chamber, claude, consoleDirection, feed, studio];
+export const DIRECTIONS: readonly Direction[] = [classic, chamber, claude, consoleDirection, feed, studio, slack];
 
 export const DEFAULT_DIRECTION = classic;
