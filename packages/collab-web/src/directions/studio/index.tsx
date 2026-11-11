@@ -66,13 +66,14 @@ const MONO_FONT: readonly FontSource[] = [
 ];
 
 /** What the editor pane shows: one touched file, or the run's terminal. */
-type Pane = { kind: "file"; path: string } | { kind: "terminal" };
+type Pane = { kind: "file"; path: string } | { kind: "terminal" } | { kind: "helpers" };
 
 const TERMINAL: Pane = { kind: "terminal" };
 
 function samePane(a: Pane | null, b: Pane | null): boolean {
 	if (!a || !b) return false;
-	return a.kind === b.kind && (a.kind === "terminal" || a.path === (b as { path: string }).path);
+	if (a.kind !== b.kind) return false;
+	return a.kind !== "file" || a.path === (b as { path: string }).path;
 }
 
 /** Where a call happens: its file, the terminal for a command, else nowhere the editor can show. */
@@ -273,6 +274,7 @@ function FileStrip({
 	pane,
 	oz,
 	working,
+	helpers,
 	onPick,
 }: {
 	files: readonly TouchedFile[];
@@ -280,10 +282,21 @@ function FileStrip({
 	pane: Pane | null;
 	oz: Pane | null;
 	working: boolean;
+	helpers: number;
 	onPick(pane: Pane): void;
 }): ReactNode {
 	return (
 		<nav className="st-strip" aria-label="What the run touched">
+			{helpers > 0 && (
+				<button
+					type="button"
+					className="st-tab"
+					aria-current={pane?.kind === "helpers" ? "true" : undefined}
+					onClick={() => onPick({ kind: "helpers" })}
+				>
+					Helpers {helpers}
+				</button>
+			)}
 			{shells > 0 && (
 				<button
 					type="button"
@@ -444,7 +457,9 @@ function Editor({
 		<section className="st-editor" aria-label="Editor">
 			<header className="st-editor-h">
 				<div className="st-crumb" title={file?.path}>
-					{pane?.kind === "terminal" ? (
+					{pane?.kind === "helpers" ? (
+						<span className="st-crumb-name">Helpers</span>
+					) : pane?.kind === "terminal" ? (
 						<span className="st-crumb-name">Terminal</span>
 					) : file ? (
 						<>
@@ -479,6 +494,8 @@ function Editor({
 							/>
 						</div>
 					</div>
+				) : pane?.kind === "helpers" ? (
+					<Helpers agents={snapshot.agents.filter(a => a.kind === "sub")} snapshot={snapshot} />
 				) : pane?.kind === "terminal" ? (
 					<TerminalPane calls={shells} />
 				) : file ? (
@@ -923,7 +940,15 @@ function StudioApp({ client, snapshot, onRejoin }: DirectionProps): ReactNode {
 	const editor = (
 		<div className="st-work">
 			{!railFits && (
-				<FileStrip files={run.files} shells={shells} pane={pane} oz={oz} working={snapshot.working} onPick={pick} />
+				<FileStrip
+					files={run.files}
+					shells={shells}
+					pane={pane}
+					oz={oz}
+					working={snapshot.working}
+					helpers={subs.length}
+					onPick={pick}
+				/>
 			)}
 			<Editor
 				run={run}
